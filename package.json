@@ -1,0 +1,22 @@
+{
+  "name": "clockwork-conservatory",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Clockwork Conservatory: a production-ready adaptive HTML5 puzzle for Arkadium.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/build.mjs && node scripts/serve.mjs dist",
+    "preview": "node scripts/serve.mjs dist",
+    "test": "node scripts/test.mjs",
+    "check": "node scripts/check.mjs",
+    "smoke": "python3 scripts/smoke_browser.py",
+    "ci": "npm run check && npm run test && npm run build"
+  },
+  "devDependencies": {
+    "typescript": "5.8.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
