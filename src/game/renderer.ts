@@ -101,7 +101,9 @@ export class ConservatoryRenderer {
   #puzzle: PuzzleDefinition | null = null;
   #analysis: BoardAnalysis | null = null;
   #selectedId: string | null = null;
+  #hoveredId: string | null = null;
   #hintId: string | null = null;
+  #coachId: string | null = null;
   #hintUntil = 0;
   #displayTurns = new Map<string, number>();
   #projectedTiles: ProjectedTile[] = [];
@@ -115,9 +117,13 @@ export class ConservatoryRenderer {
   #running = true;
   #reducedMotion = false;
   #highContrast = false;
+  #leakWarnings = true;
+  #anchorIndicators = true;
   #particles: Particle[] = [];
   #pollen: Pollen[] = [];
   #themeIndex = 0;
+  #victoryStartedAt = 0;
+  #victoryEndsAt = 0;
 
   public constructor(canvas: HTMLCanvasElement) {
     this.#canvas = canvas;
@@ -147,8 +153,12 @@ export class ConservatoryRenderer {
       this.#displayTurns.set(tile.id, tile.visualTurns);
     }
     this.#selectedId = puzzle.sourceId;
+    this.#hoveredId = null;
     this.#hintId = null;
+    this.#coachId = null;
     this.#particles = [];
+    this.#victoryStartedAt = 0;
+    this.#victoryEndsAt = 0;
   }
 
   public setAnalysis(analysis: BoardAnalysis): void {
@@ -159,6 +169,22 @@ export class ConservatoryRenderer {
     this.#selectedId = tileId;
   }
 
+  public setHovered(tileId: string | null): void {
+    this.#hoveredId = tileId;
+  }
+
+  public setCoach(tileId: string | null): void {
+    this.#coachId = tileId;
+  }
+
+  public setLeakWarnings(enabled: boolean): void {
+    this.#leakWarnings = enabled;
+  }
+
+  public setAnchorIndicators(enabled: boolean): void {
+    this.#anchorIndicators = enabled;
+  }
+
   public setHint(tileId: string, durationMs = 5_000): void {
     this.#hintId = tileId;
     this.#hintUntil = performance.now() + durationMs;
@@ -166,6 +192,17 @@ export class ConservatoryRenderer {
 
   public clearHint(): void {
     this.#hintId = null;
+  }
+
+  public startVictorySequence(durationMs = 1_850): void {
+    const now = performance.now();
+    this.#victoryStartedAt = now;
+    this.#victoryEndsAt = now + Math.max(250, durationMs);
+    this.#selectedId = null;
+    this.#hoveredId = null;
+    this.#hintId = null;
+    this.#coachId = null;
+    this.bloomBurst();
   }
 
   public setReducedMotion(enabled: boolean): void {
@@ -329,6 +366,7 @@ export class ConservatoryRenderer {
       this.#drawTile(projected, theme, timestamp);
     }
     this.#drawParticles();
+    this.#drawCelebration(theme, timestamp);
   }
 
   #drawBackground(theme: Theme, timestamp: number): void {
@@ -402,9 +440,10 @@ export class ConservatoryRenderer {
     const sin = Math.sin(angle);
     const centerX = (puzzle.config.cols - 1) / 2;
     const centerY = (puzzle.config.rows - 1) / 2;
-    const topInset = Math.min(92, this.#height * 0.16);
-    const bottomInset = Math.min(112, this.#height * 0.2);
-    const availableWidth = Math.max(180, this.#width * 0.9);
+    const compact = this.#width <= 760;
+    const topInset = compact ? Math.min(132, this.#height * 0.23) : Math.min(76, this.#height * 0.12);
+    const bottomInset = compact ? Math.min(92, this.#height * 0.16) : Math.min(86, this.#height * 0.14);
+    const availableWidth = Math.max(180, this.#width * (compact ? 0.96 : 0.985));
     const availableHeight = Math.max(150, this.#height - topInset - bottomInset);
 
     const unitPoints: Point[] = [];
@@ -414,11 +453,14 @@ export class ConservatoryRenderer {
       }
     }
     const bounds = pointBounds(unitPoints);
-    const scale = Math.min(
+    const victoryZoom = 1 + Math.sin(this.#victoryProgress(performance.now()) * Math.PI) * 0.065;
+    const scale =
+      Math.min(
       availableWidth / Math.max(1, bounds.maxX - bounds.minX),
-      (availableHeight * 0.82) / Math.max(1, bounds.maxY - bounds.minY),
-    );
-    const tileWidth = Math.max(31, Math.min(128, 100 * scale));
+        (availableHeight * (compact ? 0.91 : 0.97)) / Math.max(1, bounds.maxY - bounds.minY),
+      ) * victoryZoom;
+    const tutorialScaleCap = puzzle.tiles.length <= 5 ? (compact ? 168 : 220) : compact ? 142 : 168;
+    const tileWidth = Math.max(34, Math.min(tutorialScaleCap, 100 * scale));
     const tileHeight = tileWidth * 0.54;
 
     const scaledPoints: Point[] = [];
@@ -429,7 +471,7 @@ export class ConservatoryRenderer {
     }
     const scaledBounds = pointBounds(scaledPoints);
     const originX = this.#width / 2 - (scaledBounds.minX + scaledBounds.maxX) / 2;
-    const originY = topInset + availableHeight * 0.52 - (scaledBounds.minY + scaledBounds.maxY) / 2;
+    const originY = topInset + availableHeight * (compact ? 0.52 : 0.5) - (scaledBounds.minY + scaledBounds.maxY) / 2;
 
     return puzzle.tiles
       .map((tile) => {
@@ -485,7 +527,9 @@ export class ConservatoryRenderer {
     const context = this.#context;
     const powered = this.#analysis?.powered.has(tile.id) ?? false;
     const selected = tile.id === this.#selectedId;
+    const hovered = tile.id === this.#hoveredId;
     const hinted = tile.id === this.#hintId;
+    const coached = tile.id === this.#coachId;
     const extrusion = Math.max(6, tileHeight * 0.18);
 
     context.save();
@@ -524,7 +568,7 @@ export class ConservatoryRenderer {
       : powered
         ? withAlpha(theme.glow, 0.72)
         : 'rgba(222, 245, 229, 0.2)';
-    context.lineWidth = selected || hinted ? Math.max(2.5, tileWidth * 0.04) : Math.max(1, tileWidth * 0.016);
+    context.lineWidth = selected || hinted || coached ? Math.max(2.5, tileWidth * 0.04) : Math.max(1, tileWidth * 0.016);
     context.beginPath();
     polygon.forEach((point, index) => (index === 0 ? context.moveTo(point.x, point.y) : context.lineTo(point.x, point.y)));
     context.closePath();
@@ -543,16 +587,23 @@ export class ConservatoryRenderer {
       this.#drawTerminalCap(projected, theme, powered);
     }
 
-    if (tile.fixed && tile.kind !== 'source') {
+    if (this.#anchorIndicators && tile.fixed && tile.kind !== 'source') {
       this.#drawAnchor(projected, theme);
     }
-    if (selected) {
-      this.#drawSelection(projected, theme, timestamp, false);
+    if (selected && !coached) {
+      this.#drawSelection(projected, theme, timestamp, 'selected');
     }
     if (hinted) {
-      this.#drawSelection(projected, theme, timestamp, true);
+      this.#drawSelection(projected, theme, timestamp, 'hint');
     }
-    this.#drawLeaks(projected, theme, timestamp);
+    if (coached) {
+      this.#drawSelection(projected, theme, timestamp, 'coach');
+    } else if (hovered && !selected && !hinted) {
+      this.#drawSelection(projected, theme, timestamp, 'hover');
+    }
+    if (this.#leakWarnings && powered) {
+      this.#drawLeaks(projected, theme, timestamp);
+    }
   }
 
   #drawRivets(projected: ProjectedTile, theme: Theme): void {
@@ -592,7 +643,11 @@ export class ConservatoryRenderer {
       context.lineTo(endpoint.x, endpoint.y);
       context.stroke();
 
-      context.strokeStyle = powered ? withAlpha(theme.glow, this.#highContrast ? 1 : 0.78) : withAlpha(theme.metal, 0.72);
+      context.strokeStyle = powered
+        ? withAlpha(theme.glow, this.#highContrast ? 1 : 0.9)
+        : this.#highContrast
+          ? 'rgba(255,255,255,0.72)'
+          : 'rgba(143, 169, 158, 0.5)';
       context.lineWidth = Math.max(2.5, projected.tileWidth * 0.052);
       context.beginPath();
       context.moveTo(projected.center.x, projected.center.y);
@@ -621,6 +676,16 @@ export class ConservatoryRenderer {
           context.fill();
         }
       }
+
+      context.save();
+      context.fillStyle = powered ? '#f7ffff' : 'rgba(7, 22, 22, 0.92)';
+      context.strokeStyle = powered ? withAlpha(theme.glow, 0.95) : withAlpha(theme.metal, 0.62);
+      context.lineWidth = Math.max(1.2, projected.tileWidth * 0.018);
+      context.beginPath();
+      context.arc(endpoint.x, endpoint.y, Math.max(2.4, projected.tileWidth * 0.041), 0, Math.PI * 2);
+      context.fill();
+      context.stroke();
+      context.restore();
     }
   }
 
@@ -674,6 +739,17 @@ export class ConservatoryRenderer {
     context.beginPath();
     context.ellipse(projected.center.x, projected.center.y - projected.tileHeight * 0.2, radius * 1.28, radius * 0.5, 0, 0, Math.PI * 2);
     context.stroke();
+
+    context.save();
+    context.translate(projected.center.x, y);
+    context.fillStyle = '#ffffff';
+    context.shadowColor = theme.glow;
+    context.shadowBlur = projected.tileWidth * 0.28;
+    context.font = `700 ${Math.max(14, projected.tileWidth * 0.18)}px Georgia, serif`;
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillText('✦', 0, 0);
+    context.restore();
   }
 
   #drawPlant(projected: ProjectedTile, theme: Theme, powered: boolean, timestamp: number): void {
@@ -762,23 +838,42 @@ export class ConservatoryRenderer {
     const context = this.#context;
     const x = projected.center.x + projected.tileWidth * 0.25;
     const y = projected.center.y - projected.tileHeight * 0.12;
-    context.strokeStyle = withAlpha(theme.metal, 0.95);
+    const radius = projected.tileWidth * 0.072;
+    context.save();
+    context.fillStyle = 'rgba(4, 20, 20, 0.82)';
+    context.strokeStyle = withAlpha(theme.metal, 0.98);
     context.lineWidth = Math.max(1.5, projected.tileWidth * 0.022);
     context.beginPath();
-    context.arc(x, y, projected.tileWidth * 0.045, Math.PI, 0);
+    context.arc(x, y + radius * 0.14, radius * 1.05, 0, Math.PI * 2);
+    context.fill();
     context.stroke();
-    context.fillStyle = withAlpha(theme.metal, 0.9);
-    context.fillRect(x - projected.tileWidth * 0.055, y, projected.tileWidth * 0.11, projected.tileWidth * 0.085);
+    context.beginPath();
+    context.arc(x, y, radius * 0.55, Math.PI, 0);
+    context.stroke();
+    context.fillStyle = withAlpha(theme.metal, 0.96);
+    context.fillRect(x - radius * 0.7, y, radius * 1.4, radius * 0.95);
+    context.fillStyle = 'rgba(5, 24, 23, 0.9)';
+    context.beginPath();
+    context.arc(x, y + radius * 0.4, Math.max(1, radius * 0.16), 0, Math.PI * 2);
+    context.fill();
+    context.restore();
   }
 
-  #drawSelection(projected: ProjectedTile, theme: Theme, timestamp: number, hint: boolean): void {
+  #drawSelection(
+    projected: ProjectedTile,
+    theme: Theme,
+    timestamp: number,
+    kind: 'selected' | 'hint' | 'coach' | 'hover',
+  ): void {
     const context = this.#context;
-    const pulse = this.#reducedMotion ? 1 : 1 + Math.sin(timestamp * 0.006) * 0.07;
+    const pulse = this.#reducedMotion ? 1 : 1 + Math.sin(timestamp * (kind === 'coach' ? 0.009 : 0.006)) * (kind === 'coach' ? 0.11 : 0.07);
+    const color = kind === 'coach' || kind === 'hint' ? theme.accent : kind === 'hover' ? withAlpha(theme.glow, 0.66) : '#ffffff';
     context.save();
-    context.strokeStyle = hint ? theme.accent : '#ffffff';
-    context.shadowColor = hint ? theme.accent : theme.glow;
-    context.shadowBlur = projected.tileWidth * 0.22;
-    context.lineWidth = Math.max(2, projected.tileWidth * (hint ? 0.038 : 0.027));
+    context.globalAlpha = kind === 'hover' ? 0.55 : 1;
+    context.strokeStyle = color;
+    context.shadowColor = color;
+    context.shadowBlur = projected.tileWidth * (kind === 'coach' ? 0.36 : 0.22);
+    context.lineWidth = Math.max(2, projected.tileWidth * (kind === 'coach' ? 0.05 : kind === 'hint' ? 0.038 : 0.027));
     context.beginPath();
     context.ellipse(
       projected.center.x,
@@ -790,6 +885,27 @@ export class ConservatoryRenderer {
       Math.PI * 2,
     );
     context.stroke();
+    if (kind === 'coach') {
+      context.setLineDash([Math.max(3, projected.tileWidth * 0.05), Math.max(3, projected.tileWidth * 0.035)]);
+      context.lineWidth = Math.max(1.5, projected.tileWidth * 0.018);
+      context.beginPath();
+      context.ellipse(
+        projected.center.x,
+        projected.center.y,
+        projected.tileWidth * 0.57 * pulse,
+        projected.tileHeight * 0.64 * pulse,
+        0,
+        0,
+        Math.PI * 2,
+      );
+      context.stroke();
+      context.setLineDash([]);
+      context.font = `${Math.max(20, projected.tileWidth * 0.22)}px system-ui`;
+      context.textAlign = 'center';
+      context.textBaseline = 'middle';
+      context.fillStyle = '#ffffff';
+      context.fillText('☝', projected.center.x + projected.tileWidth * 0.38, projected.center.y - projected.tileHeight * 0.72 + Math.sin(timestamp * 0.008) * 4);
+    }
     context.restore();
   }
 
@@ -809,12 +925,83 @@ export class ConservatoryRenderer {
         x: projected.center.x + screenVector.x * 0.42,
         y: projected.center.y + screenVector.y * 0.42,
       };
-      const pulse = this.#reducedMotion ? 1 : 0.65 + Math.sin(timestamp * 0.009 + endpoint.x) * 0.35;
-      this.#context.fillStyle = this.#highContrast ? '#ffeb3b' : withAlpha(theme.accent, 0.65 + pulse * 0.25);
-      this.#context.beginPath();
-      this.#context.arc(endpoint.x, endpoint.y, Math.max(1.3, projected.tileWidth * 0.025 * pulse), 0, Math.PI * 2);
-      this.#context.fill();
+      const pulse = this.#reducedMotion ? 1 : 0.82 + Math.sin(timestamp * 0.009 + endpoint.x) * 0.18;
+      const context = this.#context;
+      const warning = this.#highContrast ? '#ffeb3b' : '#ff8b78';
+      context.save();
+      context.shadowColor = warning;
+      context.shadowBlur = projected.tileWidth * 0.18;
+      context.fillStyle = warning;
+      context.strokeStyle = withAlpha(warning, 0.8);
+      context.lineWidth = Math.max(1.4, projected.tileWidth * 0.018);
+      context.beginPath();
+      context.arc(endpoint.x, endpoint.y, Math.max(2.4, projected.tileWidth * 0.041 * pulse), 0, Math.PI * 2);
+      context.fill();
+      context.beginPath();
+      context.arc(endpoint.x, endpoint.y, Math.max(5, projected.tileWidth * 0.075 * pulse), 0, Math.PI * 2);
+      context.stroke();
+      context.restore();
     }
+  }
+
+  #victoryProgress(timestamp: number): number {
+    if (this.#victoryStartedAt <= 0 || this.#victoryEndsAt <= this.#victoryStartedAt) {
+      return 0;
+    }
+    if (timestamp >= this.#victoryEndsAt) {
+      return 0;
+    }
+    return Math.min(1, Math.max(0, (timestamp - this.#victoryStartedAt) / (this.#victoryEndsAt - this.#victoryStartedAt)));
+  }
+
+  #drawCelebration(theme: Theme, timestamp: number): void {
+    const progress = this.#victoryProgress(timestamp);
+    if (progress <= 0) {
+      return;
+    }
+
+    const context = this.#context;
+    const eased = 1 - Math.pow(1 - progress, 3);
+    const fade = Math.sin(Math.min(1, progress) * Math.PI);
+    const centerX = this.#width / 2;
+    const centerY = this.#height * 0.5;
+    const radius = Math.max(this.#width, this.#height) * (0.12 + eased * 0.72);
+
+    context.save();
+    context.globalCompositeOperation = 'screen';
+    const bloom = context.createRadialGradient(centerX, centerY, 0, centerX, centerY, radius);
+    bloom.addColorStop(0, withAlpha(theme.glow, 0.34 * fade));
+    bloom.addColorStop(0.35, withAlpha(theme.accent, 0.17 * fade));
+    bloom.addColorStop(1, 'rgba(255,255,255,0)');
+    context.fillStyle = bloom;
+    context.fillRect(0, 0, this.#width, this.#height);
+
+    if (!this.#reducedMotion) {
+      context.translate(centerX, centerY);
+      context.rotate(progress * 0.22);
+      for (let index = 0; index < 14; index += 1) {
+        context.rotate((Math.PI * 2) / 14);
+        const rayLength = radius * (0.52 + (index % 3) * 0.08);
+        const rayWidth = Math.max(1, this.#width * 0.0017);
+        const ray = context.createLinearGradient(0, 0, rayLength, 0);
+        ray.addColorStop(0, withAlpha(theme.glow, 0));
+        ray.addColorStop(0.3, withAlpha(theme.glow, 0.2 * fade));
+        ray.addColorStop(1, withAlpha(theme.glow, 0));
+        context.fillStyle = ray;
+        context.fillRect(0, -rayWidth / 2, rayLength, rayWidth);
+      }
+    }
+    context.restore();
+
+    context.save();
+    context.strokeStyle = withAlpha(theme.accent, 0.56 * fade);
+    context.lineWidth = Math.max(1.5, this.#width * 0.002);
+    context.shadowColor = theme.glow;
+    context.shadowBlur = 18;
+    context.beginPath();
+    context.arc(centerX, centerY, Math.max(18, radius * 0.42), 0, Math.PI * 2);
+    context.stroke();
+    context.restore();
   }
 
   #drawParticles(): void {

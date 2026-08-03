@@ -4,11 +4,13 @@ import { dailySeed, generatePuzzle } from '../core/generator.js';
 import { suggestHint } from '../core/hints.js';
 import { createDefaultProgress, sanitizeProgress, SAVE_KEY, serializedSize } from '../core/progress.js';
 import { calculateCompletion } from '../core/scoring.js';
+import { isTutorialSeed, tutorialForLevel, type TutorialStep } from '../core/tutorial.js';
 import type {
   ActiveRunSnapshot,
   BoardAnalysis,
   CompletionStats,
   GameMode,
+  PlantKind,
   PersistedProgress,
   PuzzleDefinition,
   SupportedLanguage,
@@ -37,6 +39,7 @@ export class ClockworkGame {
   readonly #menuOverlay: HTMLElement;
   readonly #hud: HTMLElement;
   readonly #toolbar: HTMLElement;
+  readonly #coachOverlay: HTMLElement;
   readonly #completionOverlay: HTMLElement;
   readonly #pauseOverlay: HTMLElement;
   readonly #loadingOverlay: HTMLElement;
@@ -56,6 +59,8 @@ export class ClockworkGame {
   #screen: Screen = 'loading';
   #modalKind: ModalKind = null;
   #selectedId: string | null = null;
+  #tutorialStep: TutorialStep | null = null;
+  #tutorialTargetId: string | null = null;
   #moves = 0;
   #hintsUsed = 0;
   #history: MoveRecord[] = [];
@@ -82,6 +87,7 @@ export class ClockworkGame {
     this.#menuOverlay = mustElement(app, '#menu-overlay');
     this.#hud = mustElement(app, '#game-hud');
     this.#toolbar = mustElement(app, '#game-toolbar');
+    this.#coachOverlay = mustElement(app, '#coach-overlay');
     this.#completionOverlay = mustElement(app, '#completion-overlay');
     this.#pauseOverlay = mustElement(app, '#pause-overlay');
     this.#loadingOverlay = mustElement(app, '#loading-overlay');
@@ -181,14 +187,19 @@ export class ClockworkGame {
       this.#showToast(this.#i18n.t('saveRestored'));
     } else {
       const level = mode === 'campaign' ? this.#progress.campaignLevel : 1;
-      const seed =
-        mode === 'daily'
-          ? currentDailySeed
-          : mode === 'campaign'
-            ? `campaign:${level}:clockwork-v1`
-            : `zen:${Date.now()}:${Math.round(Math.random() * 1_000_000)}`;
-      const config = difficultyFor(level, this.#progress.skill.rating, mode);
-      puzzle = generatePuzzle({ seed, mode, level, config });
+      const tutorial = mode === 'campaign' ? tutorialForLevel(level) : null;
+      if (tutorial) {
+        puzzle = tutorial.puzzle;
+      } else {
+        const seed =
+          mode === 'daily'
+            ? currentDailySeed
+            : mode === 'campaign'
+              ? `campaign:${level}:clockwork-v2`
+              : `zen:${Date.now()}:${Math.round(Math.random() * 1_000_000)}`;
+        const config = difficultyFor(level, this.#progress.skill.rating, mode);
+        puzzle = generatePuzzle({ seed, mode, level, config });
+      }
       this.#moves = 0;
       this.#hintsUsed = 0;
       this.#elapsedBaseMs = 0;
@@ -204,6 +215,7 @@ export class ClockworkGame {
     this.#renderer.setAnalysis(this.#analysis);
     this.#renderer.setSelected(this.#selectedId);
     this.#screen = 'playing';
+    this.#configureTutorial(puzzle);
     this.#pauseReasons.clear();
     this.#app.dataset.screen = 'playing';
     this.#app.dataset.mode = mode;
@@ -229,16 +241,27 @@ export class ClockworkGame {
       plants: this.#analysis.totalPlants,
     });
 
+    // A page can close during the short final-turn flourish after the solved board was
+    // persisted but before completion cleanup. Resume that state as a win instead of
+    // asking the player to disturb an already-complete circuit.
+    if (this.#analysis.solved && !this.#completionPending) {
+      this.#completionPending = true;
+      window.setTimeout(() => void this.#completePuzzle(), this.#progress.settings.reducedMotion ? 40 : 180);
+    }
+
     requestAnimationFrame(() => this.#canvas.focus({ preventScroll: true }));
   }
 
   #restoreSnapshot(snapshot: ActiveRunSnapshot): PuzzleDefinition {
-    const puzzle = generatePuzzle({
-      seed: snapshot.seed,
-      mode: snapshot.mode,
-      level: snapshot.level,
-      config: snapshot.config,
-    });
+    const tutorial = snapshot.mode === 'campaign' && isTutorialSeed(snapshot.seed) ? tutorialForLevel(snapshot.level) : null;
+    const puzzle =
+      tutorial?.puzzle ??
+      generatePuzzle({
+        seed: snapshot.seed,
+        mode: snapshot.mode,
+        level: snapshot.level,
+        config: snapshot.config,
+      });
     if (snapshot.rotations.length === puzzle.tiles.length) {
       puzzle.tiles.forEach((tile, index) => {
         const period = rotationPeriod(tile.baseMask);
@@ -276,6 +299,14 @@ export class ClockworkGame {
       this.#renderCanvasLabel();
       this.#rotateTile(tileId);
     });
+    this.#canvas.addEventListener('pointermove', (event) => {
+      if (this.#screen !== 'playing' || this.#pauseReasons.size > 0 || this.#completionPending) {
+        this.#renderer.setHovered(null);
+        return;
+      }
+      this.#renderer.setHovered(this.#renderer.hitTest(event.clientX, event.clientY));
+    });
+    this.#canvas.addEventListener('pointerleave', () => this.#renderer.setHovered(null));
 
     this.#canvas.addEventListener('keydown', (event) => this.#handleCanvasKey(event));
     this.#app.addEventListener('change', (event) => this.#handleControlChange(event));
@@ -471,6 +502,15 @@ export class ClockworkGame {
     if (!tile) {
       return;
     }
+    if (this.#tutorialTargetId && tileId !== this.#tutorialTargetId) {
+      this.#audio.denied();
+      this.#selectedId = this.#tutorialTargetId;
+      this.#renderer.setSelected(this.#tutorialTargetId);
+      this.#showToast(this.#i18n.t('tutorialTryGlow'));
+      this.#renderer.setCoach(this.#tutorialTargetId);
+      this.#renderCanvasLabel();
+      return;
+    }
     const period = rotationPeriod(tile.baseMask);
     if (tile.fixed || period === 1) {
       this.#audio.denied();
@@ -511,6 +551,8 @@ export class ClockworkGame {
     this.#scheduleSave();
 
     if (this.#analysis.solved && !this.#completionPending) {
+      this.#coachOverlay.hidden = true;
+      this.#renderer.setCoach(null);
       this.#completionPending = true;
       window.setTimeout(
         () => void this.#completePuzzle(),
@@ -556,12 +598,9 @@ export class ClockworkGame {
     const freeRemaining = Math.max(0, FREE_HINTS - this.#hintsUsed);
     if (freeRemaining === 0) {
       const rewarded = await this.#bridge.showRewarded();
-      if (!this.#bridge.connected) {
-        this.#showToast(this.#i18n.t('adUnavailable'));
-      }
       if (!rewarded) {
         this.#hintBusy = false;
-        this.#showToast(this.#i18n.t('rewardedFailed'));
+        this.#showToast(this.#bridge.rewardedAvailable ? this.#i18n.t('rewardedFailed') : this.#i18n.t('adUnavailable'));
         this.#renderHud();
         return;
       }
@@ -617,7 +656,9 @@ export class ClockworkGame {
     const elapsedMs = this.#elapsedBaseMs;
     const stats = calculateCompletion(puzzle, this.#moves, this.#hintsUsed, elapsedMs);
     this.#progress.totalScore += stats.score;
-    this.#progress.skill = updateSkillProfile(this.#progress.skill, stats, puzzle.tiles.length);
+    if (!isTutorialSeed(puzzle.seed)) {
+      this.#progress.skill = updateSkillProfile(this.#progress.skill, stats, puzzle.tiles.length);
+    }
     if (puzzle.mode === 'campaign') {
       this.#progress.campaignLevel = Math.max(this.#progress.campaignLevel, puzzle.level + 1);
     }
@@ -631,24 +672,36 @@ export class ClockworkGame {
         dailyIsBest = true;
       }
     }
+    window.clearTimeout(this.#saveTimer);
     delete this.#progress.activeRun;
-    await this.#saveNow();
 
+    this.#coachOverlay.hidden = true;
+    this.#renderer.setCoach(null);
+    this.#toolbar.hidden = true;
+    this.#app.dataset.state = 'celebrating';
     this.#audio.bloom();
-    this.#renderer.bloomBurst();
-    await this.#bridge.levelEnd(puzzle.level, stats.score);
-    await this.#bridge.gameWon(stats.score, elapsedMs / 1_000);
-    let leaderboardPosted = false;
-    if (puzzle.mode === 'daily') {
-      leaderboardPosted = await this.#bridge.postDailyScore(stats.score);
-    }
+    const celebrationDuration = this.#progress.settings.reducedMotion ? 320 : 1_850;
+    this.#renderer.startVictorySequence(celebrationDuration);
+
+    // Start the payoff immediately. Persistence, lifecycle, analytics, and leaderboard
+    // work continue during the flourish instead of delaying visible player feedback.
+    const platformWork = (async (): Promise<boolean> => {
+      await this.#saveNow(false);
+      await this.#bridge.levelEnd(puzzle.level, stats.score);
+      await this.#bridge.gameWon(stats.score, elapsedMs / 1_000);
+      return puzzle.mode === 'daily' ? this.#bridge.postDailyScore(stats.score) : false;
+    })();
+    const [, leaderboardPosted] = await Promise.all([delay(celebrationDuration), platformWork]);
 
     this.#renderCompletion(stats, dailyIsBest, leaderboardPosted);
     this.#screen = 'complete';
     this.#app.dataset.screen = 'complete';
+    delete this.#app.dataset.state;
     this.#hud.hidden = true;
-    this.#toolbar.hidden = true;
     this.#completionOverlay.hidden = false;
+    this.#completionOverlay.classList.remove('is-entering');
+    void this.#completionOverlay.offsetWidth;
+    this.#completionOverlay.classList.add('is-entering');
     this.#canvas.tabIndex = -1;
     this.#completionPending = false;
   }
@@ -674,6 +727,12 @@ export class ClockworkGame {
       '[data-leaderboard-status]',
       puzzle.mode === 'daily' ? this.#i18n.t(leaderboardPosted ? 'leaderboardPosted' : 'leaderboardOffline') : '',
     );
+    const unlocked = puzzle.mode === 'campaign' ? specimenUnlockedAt(puzzle.level) : null;
+    setText(
+      this.#completionOverlay,
+      '[data-unlock-message]',
+      unlocked ? this.#i18n.t('specimenUnlocked', { specimen: this.#specimenName(unlocked) }) : '',
+    );
 
     const nextButton = mustElement<HTMLButtonElement>(this.#completionOverlay, '[data-action="next"]');
     nextButton.textContent = puzzle.mode === 'campaign' ? this.#i18n.t('nextLevel') : puzzle.mode === 'daily' ? this.#i18n.t('replay') : this.#i18n.t('startNew');
@@ -697,7 +756,7 @@ export class ClockworkGame {
     if (!puzzle) {
       return;
     }
-    const fresh = generatePuzzle({ seed: puzzle.seed, mode: puzzle.mode, level: puzzle.level, config: puzzle.config });
+    const fresh = this.#freshPuzzle(puzzle);
     this.#puzzle = fresh;
     this.#analysis = analyzeBoard(fresh);
     this.#moves = 0;
@@ -710,6 +769,7 @@ export class ClockworkGame {
     this.#renderer.setAnalysis(this.#analysis);
     this.#renderer.setSelected(fresh.sourceId);
     this.#screen = 'playing';
+    this.#configureTutorial(fresh);
     this.#app.dataset.screen = 'playing';
     this.#completionOverlay.hidden = true;
     this.#hud.hidden = false;
@@ -726,7 +786,7 @@ export class ClockworkGame {
     if (!puzzle) {
       return;
     }
-    const fresh = generatePuzzle({ seed: puzzle.seed, mode: puzzle.mode, level: puzzle.level, config: puzzle.config });
+    const fresh = this.#freshPuzzle(puzzle);
     this.#puzzle = fresh;
     this.#analysis = analyzeBoard(fresh);
     this.#moves = 0;
@@ -738,11 +798,17 @@ export class ClockworkGame {
     this.#renderer.setPuzzle(fresh);
     this.#renderer.setAnalysis(this.#analysis);
     this.#renderer.setSelected(fresh.sourceId);
+    this.#configureTutorial(fresh);
     this.#resumeTiming();
     this.#renderHud();
     this.#scheduleSave(0);
     await this.#bridge.customEvent('Puzzle', 'Restart', { mode: fresh.mode, level: fresh.level });
     await this.#bridge.levelStart(fresh.level);
+  }
+
+  #freshPuzzle(puzzle: PuzzleDefinition): PuzzleDefinition {
+    const tutorial = puzzle.mode === 'campaign' && isTutorialSeed(puzzle.seed) ? tutorialForLevel(puzzle.level) : null;
+    return tutorial?.puzzle ?? generatePuzzle({ seed: puzzle.seed, mode: puzzle.mode, level: puzzle.level, config: puzzle.config });
   }
 
   #moveSelection(key: 'arrowup' | 'arrowdown' | 'arrowleft' | 'arrowright'): void {
@@ -792,6 +858,9 @@ export class ClockworkGame {
     this.#pauseOverlay.hidden = true;
     this.#hud.hidden = true;
     this.#toolbar.hidden = true;
+    this.#coachOverlay.hidden = true;
+    this.#renderer.setCoach(null);
+    this.#renderer.setHovered(null);
     this.#canvas.tabIndex = -1;
     this.#pauseReasons.clear();
     this.#renderer.resume();
@@ -807,6 +876,35 @@ export class ClockworkGame {
     }
     setText(this.#menuOverlay, '[data-campaign-progress]', `${this.#chapterName(this.#progress.campaignLevel)} · ${this.#i18n.t('level')} ${this.#progress.campaignLevel}`);
     setText(this.#menuOverlay, '[data-total-score]', this.#i18n.formatNumber(this.#progress.totalScore));
+    const restored = Math.max(0, this.#progress.campaignLevel - 1);
+    const chamberProgress = restored % 5;
+    setText(
+      this.#menuOverlay,
+      '[data-restoration-count]',
+      this.#i18n.t('circuitsRestored', { count: restored }),
+    );
+    setText(
+      this.#menuOverlay,
+      '[data-chamber-progress]',
+      this.#i18n.t('chamberProgress', { current: chamberProgress, total: 5 }),
+    );
+    const progressBar = mustElement<HTMLElement>(this.#menuOverlay, '[data-restoration-bar]');
+    progressBar.style.setProperty('--restoration-progress', `${(chamberProgress / 5) * 100}%`);
+    this.#menuOverlay.querySelectorAll<HTMLElement>('[data-specimen]').forEach((element) => {
+      const kind = element.dataset.specimen as PlantKind | undefined;
+      if (!kind) {
+        return;
+      }
+      const unlocked = restored >= specimenUnlockLevel(kind);
+      element.dataset.unlocked = String(unlocked);
+      element.setAttribute(
+        'aria-label',
+        unlocked
+          ? this.#i18n.t('specimenCollected', { specimen: this.#specimenName(kind) })
+          : this.#i18n.t('specimenLocked'),
+      );
+      element.title = element.getAttribute('aria-label') ?? '';
+    });
     setText(this.#menuOverlay, '[data-version]', this.#i18n.t('version', { version: this.#version }));
     const status = mustElement(this.#menuOverlay, '[data-sdk-status]');
     status.textContent = this.#bridge.connected ? 'Arkadium SDK ready' : 'Standalone preview';
@@ -822,6 +920,10 @@ export class ClockworkGame {
     setText(this.#hud, '[data-hud-chapter]', this.#chapterName(puzzle.level));
     setText(this.#hud, '[data-hud-level]', `${this.#modeName(puzzle.mode)} · ${this.#i18n.t('level')} ${puzzle.level}`);
     setText(this.#hud, '[data-hud-plants]', `${analysis.poweredPlants}/${analysis.totalPlants}`);
+    const activeLeaks = analysis.leaks.filter((leak) => analysis.powered.has(leak.tileId)).length;
+    setText(this.#hud, '[data-hud-leaks]', this.#i18n.formatNumber(activeLeaks));
+    const leakStat = mustElement<HTMLElement>(this.#hud, '.leak-stat');
+    leakStat.hidden = this.#tutorialStep === 1;
     setText(this.#hud, '[data-hud-moves]', this.#i18n.formatNumber(this.#moves));
     setText(this.#hud, '[data-hud-time]', this.#i18n.formatTime(this.#currentElapsedMs()));
     setText(this.#hud, '[data-hud-score]', this.#i18n.formatNumber(this.#estimatedScore()));
@@ -843,6 +945,43 @@ export class ClockworkGame {
     soundButton.textContent = this.#progress.settings.sound ? '♪' : '♪̸';
     soundButton.title = this.#i18n.t('sound');
     soundButton.setAttribute('aria-label', this.#i18n.t('sound'));
+  }
+
+  #configureTutorial(puzzle: PuzzleDefinition): void {
+    const tutorial = puzzle.mode === 'campaign' && isTutorialSeed(puzzle.seed) ? tutorialForLevel(puzzle.level) : null;
+    this.#tutorialStep = tutorial?.step ?? null;
+    this.#tutorialTargetId = tutorial?.targetTileId ?? null;
+    this.#renderer.setCoach(this.#tutorialTargetId);
+    this.#renderer.setLeakWarnings(this.#tutorialStep !== 1);
+    this.#renderer.setAnchorIndicators(this.#tutorialStep === null || this.#tutorialStep === 3);
+    if (this.#tutorialTargetId) {
+      this.#selectedId = this.#tutorialTargetId;
+      this.#renderer.setSelected(this.#tutorialTargetId);
+    }
+    this.#renderCoach();
+  }
+
+  #renderCoach(): void {
+    const step = this.#tutorialStep;
+    if (!step || this.#screen !== 'playing') {
+      this.#coachOverlay.hidden = true;
+      return;
+    }
+    setText(this.#coachOverlay, '[data-coach-kicker]', this.#i18n.t('guidedRestoration', { step, total: 3 }));
+    setText(this.#coachOverlay, '[data-coach-title]', this.#i18n.t(`tutorial${step}Title` as TranslationKey));
+    setText(this.#coachOverlay, '[data-coach-body]', this.#i18n.t(`tutorial${step}Body` as TranslationKey));
+    const legend = mustElement<HTMLElement>(this.#coachOverlay, '[data-coach-legend]');
+    legend.innerHTML =
+      step === 1
+        ? `<span><b class="legend-source">✦</b>${escapeHtml(this.#i18n.t('sourceShort'))}</span><span><b class="legend-plant">❀</b>${escapeHtml(this.#i18n.t('bloomShort'))}</span>`
+        : step === 2
+          ? `<span><b class="legend-leak">!</b>${escapeHtml(this.#i18n.t('leakShort'))}</span><span><b class="legend-glow">↻</b>${escapeHtml(this.#i18n.t('turnOnce'))}</span>`
+          : `<span><b class="legend-fixed">◆</b>${escapeHtml(this.#i18n.t('anchoredShort'))}</span><span><b class="legend-plant">❀</b>${escapeHtml(this.#i18n.t('everyBloom'))}</span>`;
+    this.#coachOverlay.hidden = false;
+  }
+
+  #specimenName(kind: PlantKind): string {
+    return this.#i18n.t(`specimen${kind[0]?.toUpperCase()}${kind.slice(1)}` as TranslationKey);
   }
 
   #renderCanvasLabel(): void {
@@ -992,6 +1131,7 @@ export class ClockworkGame {
       }
     });
     this.#renderMenu();
+    this.#renderCoach();
   }
 
   #chapterName(level: number): string {
@@ -1037,8 +1177,8 @@ export class ClockworkGame {
     this.#saveTimer = window.setTimeout(() => void this.#saveNow(), delayMs);
   }
 
-  async #saveNow(): Promise<void> {
-    if (this.#screen === 'playing' && this.#puzzle) {
+  async #saveNow(captureActiveRun = true): Promise<void> {
+    if (captureActiveRun && this.#screen === 'playing' && this.#puzzle) {
       this.#progress.activeRun = {
         mode: this.#puzzle.mode,
         level: this.#puzzle.level,
@@ -1090,6 +1230,7 @@ function shellTemplate(): string {
       </div>
       <div class="hud-stats" aria-live="off">
         <div class="hud-stat"><span data-i18n="plants">Blooms</span><strong data-hud-plants>0/0</strong></div>
+        <div class="hud-stat leak-stat"><span data-i18n="leaks">Leaks</span><strong data-hud-leaks>0</strong></div>
         <div class="hud-stat"><span data-i18n="moves">Moves</span><strong data-hud-moves>0</strong></div>
         <div class="hud-stat"><span data-i18n="time">Time</span><strong data-hud-time>00:00</strong></div>
         <div class="hud-stat score-stat"><span data-i18n="score">Score</span><strong data-hud-score>0</strong></div>
@@ -1101,11 +1242,21 @@ function shellTemplate(): string {
       <button class="icon-button" data-action="menu" data-i18n-aria="menu" aria-label="Garden menu">☰</button>
       <button class="icon-button" data-action="rotate-left" data-i18n-aria="rotateLeft" aria-label="Turn view left">↶</button>
       <button class="tool-button" data-action="undo"><span aria-hidden="true">↩</span><span data-i18n="undo">Undo</span></button>
-      <button class="tool-button hint-button" data-action="hint">AI hint · 3</button>
+      <button class="tool-button hint-button" data-action="hint">Garden hint · 3</button>
       <button class="icon-button" data-action="rotate-right" data-i18n-aria="rotateRight" aria-label="Turn view right">↷</button>
       <button class="icon-button" data-action="toggle-sound" data-i18n-aria="sound" aria-label="Sound">♪</button>
       <button class="icon-button wide-only" data-action="restart" data-i18n-aria="restart" aria-label="Restart">⟳</button>
     </nav>
+
+    <aside id="coach-overlay" class="coach-overlay glass-panel" hidden aria-live="polite">
+      <div class="coach-copy">
+        <span class="eyebrow" data-coach-kicker>Guided restoration · 1/3</span>
+        <strong data-coach-title>Wake the first bloom</strong>
+        <p data-coach-body>Tap the glowing mechanism once.</p>
+      </div>
+      <div class="coach-legend" data-coach-legend></div>
+      <span class="coach-pointer" aria-hidden="true">⌁</span>
+    </aside>
 
     <section id="menu-overlay" class="screen-overlay menu-overlay">
       <div class="menu-panel glass-panel">
@@ -1125,6 +1276,20 @@ function shellTemplate(): string {
           <button class="mode-card" data-action="daily"><span class="mode-icon">☀</span><strong data-i18n="daily">Daily bloom</strong><small data-i18n="dailyDescription">One shared puzzle. One score. Every day.</small></button>
           <button class="mode-card" data-action="zen"><span class="mode-icon">❀</span><strong data-i18n="zen">Zen garden</strong><small data-i18n="zenDescription">A calm, untimed adaptive puzzle.</small></button>
         </div>
+        <section class="restoration-summary" aria-labelledby="restoration-title">
+          <div class="restoration-heading">
+            <div><span class="eyebrow" id="restoration-title" data-i18n="restoration">Glasshouse restoration</span><strong data-restoration-count>0 circuits restored</strong></div>
+            <span data-chamber-progress>0 / 5</span>
+          </div>
+          <div class="restoration-track" data-restoration-bar><i></i></div>
+          <div class="specimen-row" aria-label="Plant collection">
+            <span data-specimen="aster" data-unlocked="false">✿</span>
+            <span data-specimen="fern" data-unlocked="false">❧</span>
+            <span data-specimen="orchid" data-unlocked="false">❀</span>
+            <span data-specimen="lotus" data-unlocked="false">✾</span>
+            <span data-specimen="rose" data-unlocked="false">❁</span>
+          </div>
+        </section>
         <div class="menu-actions">
           <button class="text-button" data-action="help" data-i18n="howToPlay">How to play</button>
           <button class="text-button" data-action="settings" data-i18n="settings">Settings</button>
@@ -1132,7 +1297,7 @@ function shellTemplate(): string {
         <div class="menu-footer">
           <span><span data-i18n="score">Score</span> <strong data-total-score>0</strong></span>
           <span data-sdk-status data-connected="false">Standalone preview</span>
-          <span data-version>Version 0.1.0</span>
+          <span data-version>Version 0.2.0</span>
         </div>
       </div>
     </section>
@@ -1149,6 +1314,7 @@ function shellTemplate(): string {
           <div><span data-i18n="time">Time</span><strong data-final-time>00:00</strong></div>
         </div>
         <p class="best-label" data-best-label></p>
+        <p class="unlock-message" data-unlock-message></p>
         <p class="leaderboard-status" data-leaderboard-status></p>
         <button class="button primary" data-action="next" data-i18n="nextLevel">Open next chamber</button>
         <button class="text-button" data-action="return-menu" data-i18n="returnMenu">Return to menu</button>
@@ -1210,4 +1376,21 @@ function escapeHtml(value: string): string {
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+const SPECIMEN_UNLOCKS: Readonly<Record<PlantKind, number>> = {
+  aster: 1,
+  fern: 3,
+  orchid: 5,
+  lotus: 8,
+  rose: 12,
+};
+
+function specimenUnlockLevel(kind: PlantKind): number {
+  return SPECIMEN_UNLOCKS[kind];
+}
+
+function specimenUnlockedAt(level: number): PlantKind | null {
+  const match = (Object.entries(SPECIMEN_UNLOCKS) as Array<[PlantKind, number]>).find(([, unlockLevel]) => unlockLevel === level);
+  return match?.[0] ?? null;
 }

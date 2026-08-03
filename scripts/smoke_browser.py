@@ -61,7 +61,9 @@ def main() -> int:
             scenarios = [
                 ("menu-desktop.png", None, 1440, 900),
                 ("game-desktop.png", "campaign", 1440, 900),
+                ("tutorial-mobile.png", "campaign", 390, 844),
                 ("game-mobile.png", "daily", 390, 844),
+                ("game-landscape.png", "daily", 844, 390),
             ]
             for filename, action, width, height in scenarios:
                 page = browser.new_page(viewport={"width": width, "height": height}, device_scale_factor=1)
@@ -70,7 +72,29 @@ def main() -> int:
                 page.set_content(html, wait_until="domcontentloaded")
                 page.evaluate(
                     """async ({ modules }) => {
-                      window.ArkadiumGameSDK = { getInstance: async () => ({}) };
+                      window.__savedProgress = null;
+                      window.ArkadiumGameSDK = {
+                        getInstance: async () => ({
+                          lifecycle: {
+                            LifecycleEvent: { GAME_PAUSE: 'pause', GAME_RESUME: 'resume' },
+                            registerEventCallback: () => undefined,
+                            onTestReady: () => undefined,
+                            onGameStart: () => undefined,
+                            onGameEnd: () => undefined,
+                            onLevelStart: () => undefined,
+                            onLevelEnd: () => undefined,
+                            onChangeScore: () => undefined,
+                          },
+                          auth: { isUserAuthorized: () => false },
+                          persistence: {
+                            getLocalStorageItem: () => null,
+                            setLocalStorageItem: (_key, value) => {
+                              window.__savedProgress = structuredClone(value);
+                            },
+                          },
+                          analytics: {},
+                        }),
+                      };
                       const imports = {};
                       for (const [name, source] of Object.entries(modules)) {
                         imports[name] = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
@@ -89,6 +113,20 @@ def main() -> int:
                     page.locator("#app[data-screen='playing']").wait_for(timeout=8_000)
                 page.wait_for_timeout(900)
                 page.screenshot(path=str(ARTIFACTS / filename), full_page=True)
+                if filename == "game-desktop.png":
+                    page.locator("#game-canvas").click(position={"x": width / 2, "y": height / 2})
+                    page.locator("#app[data-state='celebrating']").wait_for(timeout=4_000)
+                    page.wait_for_timeout(420)
+                    page.screenshot(path=str(ARTIFACTS / "victory-desktop.png"), full_page=True)
+                    page.locator("#app[data-screen='complete']").wait_for(timeout=5_000)
+                    page.wait_for_timeout(650)
+                    page.screenshot(path=str(ARTIFACTS / "completion-desktop.png"), full_page=True)
+                    unlock = page.locator("[data-unlock-message]").inner_text()
+                    if "Aster" not in unlock:
+                        raise RuntimeError(f"Expected first specimen unlock, received: {unlock!r}")
+                    active_run_persisted = page.evaluate("Boolean(window.__savedProgress?.activeRun)")
+                    if active_run_persisted:
+                        raise RuntimeError("Clean level completion must clear the persisted active run")
                 if errors:
                     raise RuntimeError(f"Browser errors in {filename}: {' | '.join(errors)}")
                 has_overflow = page.locator("body").evaluate("node => node.scrollWidth > node.clientWidth + 1")
@@ -97,6 +135,59 @@ def main() -> int:
                 if action and page.locator("canvas#game-canvas").count() != 1:
                     raise RuntimeError(f"Canvas missing in {filename}")
                 page.close()
+
+            # Simulate an SDK that becomes available only after the standalone timeout and
+            # after the player has already started a level. The lifecycle outbox must replay
+            # every mandatory event in the original order.
+            page = browser.new_page(viewport={"width": 900, "height": 700}, device_scale_factor=1)
+            page.route("**/sdk/v2/sdk.js", lambda route: route.abort())
+            page.set_content(html, wait_until="domcontentloaded")
+            page.evaluate(
+                """async ({ modules }) => {
+                  const imports = {};
+                  for (const [name, source] of Object.entries(modules)) {
+                    imports[name] = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+                  }
+                  const map = document.createElement('script');
+                  map.type = 'importmap';
+                  map.textContent = JSON.stringify({ imports });
+                  document.head.append(map);
+                  await import('clockwork/src/main.js');
+                }""",
+                {"modules": modules},
+            )
+            page.locator("#app[data-loaded='true']").wait_for(timeout=8_000)
+            page.locator("[data-action='campaign']").click()
+            page.locator("#app[data-screen='playing']").wait_for(timeout=4_000)
+            page.evaluate(
+                """() => {
+                  window.__lifecycleReplay = [];
+                  const record = (name) => (...args) => window.__lifecycleReplay.push([name, ...args]);
+                  window.ArkadiumGameSDK = {
+                    getInstance: async () => ({
+                      lifecycle: {
+                        LifecycleEvent: { GAME_PAUSE: 'pause', GAME_RESUME: 'resume' },
+                        registerEventCallback: () => undefined,
+                        onTestReady: record('onTestReady'),
+                        onGameStart: record('onGameStart'),
+                        onGameEnd: record('onGameEnd'),
+                        onLevelStart: record('onLevelStart'),
+                        onLevelEnd: record('onLevelEnd'),
+                        onChangeScore: record('onChangeScore'),
+                      },
+                      analytics: {},
+                    }),
+                  };
+                  const script = document.querySelector('script[data-arkadium-game-sdk]');
+                  if (!script) throw new Error('Arkadium SDK script marker missing');
+                  script.dispatchEvent(new Event('load'));
+                }"""
+            )
+            page.wait_for_function("window.__lifecycleReplay?.length >= 3", timeout=4_000)
+            replay = page.evaluate("window.__lifecycleReplay.map(entry => entry[0])")
+            if replay[:3] != ["onTestReady", "onGameStart", "onLevelStart"]:
+                raise RuntimeError(f"Late SDK lifecycle replay is out of order: {replay}")
+            page.close()
         finally:
             browser.close()
     print("Browser smoke test passed. Screenshots written to artifacts/.")

@@ -5,6 +5,11 @@ const SDK_URL = 'https://developers.arkadium.com/cdn/sdk/v2/sdk.js';
 type UnknownRecord = Record<string, unknown>;
 type PauseHandler = () => void;
 
+interface QueuedLifecycleCall {
+  readonly method: string;
+  readonly args: readonly unknown[];
+}
+
 interface ArkadiumSdkLoader {
   getInstance(): Promise<unknown>;
 }
@@ -19,6 +24,7 @@ export type BridgeStatus = 'connecting' | 'connected' | 'standalone';
 
 export class ArkadiumBridge extends EventTarget {
   readonly #debug: boolean;
+  readonly #previewRewards: boolean;
   #sdk: UnknownRecord | null = null;
   #status: BridgeStatus = 'connecting';
   #readyToShow = false;
@@ -29,11 +35,14 @@ export class ArkadiumBridge extends EventTarget {
   #resumeHandler: PauseHandler = () => undefined;
   #initialization: Promise<void> | null = null;
   #lateConnectStarted = false;
+  #lifecycleCallbacksRegistered = false;
+  #lifecycleQueue: QueuedLifecycleCall[] = [];
 
   public constructor(private readonly version: string) {
     super();
     const params = new URLSearchParams(location.search);
     this.#debug = params.get('debug') === '1' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    this.#previewRewards = this.#debug && params.get('devReward') === '1';
   }
 
   public get status(): BridgeStatus {
@@ -42,6 +51,10 @@ export class ArkadiumBridge extends EventTarget {
 
   public get connected(): boolean {
     return this.#status === 'connected';
+  }
+
+  public get rewardedAvailable(): boolean {
+    return this.#hasMethod('ads', 'showRewardAd') || this.#previewRewards;
   }
 
   public initialize(): Promise<void> {
@@ -59,10 +72,11 @@ export class ArkadiumBridge extends EventTarget {
 
   public async markReady(): Promise<void> {
     this.#readyToShow = true;
-    if (this.#sdk && !this.#readySent) {
-      this.#readySent = true;
-      await this.#invoke('lifecycle', 'onTestReady');
+    if (this.#readySent) {
+      return;
     }
+    this.#readySent = true;
+    await this.#sendOrQueueLifecycle('onTestReady');
   }
 
   public async gameStart(): Promise<void> {
@@ -70,7 +84,7 @@ export class ArkadiumBridge extends EventTarget {
       return;
     }
     this.#gameStarted = true;
-    await this.#invoke('lifecycle', 'onGameStart');
+    await this.#sendOrQueueLifecycle('onGameStart');
     await this.#analytics('sendStartButtonClickedEvent', 'New');
     await this.#analytics('sendGameScreenPageView');
     await this.#analytics('sendGameplayReadyEvent');
@@ -81,18 +95,18 @@ export class ArkadiumBridge extends EventTarget {
       return;
     }
     this.#gameEnded = true;
-    await this.#invoke('lifecycle', 'onGameEnd');
+    await this.#sendOrQueueLifecycle('onGameEnd');
   }
 
   public async levelStart(level: number): Promise<void> {
-    await this.#invoke('lifecycle', 'onLevelStart', level);
+    await this.#sendOrQueueLifecycle('onLevelStart', level);
     await this.#analytics('sendRoundEvent', { round: level });
   }
 
   public async levelEnd(level: number, score: number): Promise<void> {
-    await this.#invoke('lifecycle', 'onLevelEnd', level);
-    await this.#invoke('lifecycle', 'onChangeScore', score);
-    await this.#analytics('sendRoundEndEvent', 'Finished', { round: level, reason: 'No_Moves' });
+    await this.#sendOrQueueLifecycle('onLevelEnd', level);
+    await this.#sendOrQueueLifecycle('onChangeScore', score);
+    await this.#analytics('sendRoundEndEvent', 'Finished', { round: level, reason: 'Completed' });
   }
 
   public async gameWon(score: number, elapsedSeconds: number): Promise<void> {
@@ -101,7 +115,7 @@ export class ArkadiumBridge extends EventTarget {
   }
 
   public async scoreChanged(score: number): Promise<void> {
-    await this.#invoke('lifecycle', 'onChangeScore', score);
+    await this.#sendOrQueueLifecycle('onChangeScore', score);
   }
 
   public async firstMove(): Promise<void> {
@@ -188,7 +202,10 @@ export class ArkadiumBridge extends EventTarget {
 
   public async showRewarded(): Promise<boolean> {
     if (!this.#sdk || !this.#hasMethod('ads', 'showRewardAd')) {
-      return true;
+      if (this.#previewRewards) {
+        console.info('[Arkadium bridge] Explicit devReward preview granted.');
+      }
+      return this.#previewRewards;
     }
     this.#pauseHandler();
     try {
@@ -310,9 +327,10 @@ export class ArkadiumBridge extends EventTarget {
       this.#status = 'connected';
       this.#registerLifecycleCallbacks();
       await this.#configureAnalytics();
+      await this.#flushLifecycleQueue();
       if (this.#readyToShow && !this.#readySent) {
         this.#readySent = true;
-        await this.#invoke('lifecycle', 'onTestReady');
+        await this.#sendOrQueueLifecycle('onTestReady');
       }
       this.dispatchEvent(new Event('connected'));
       return true;
@@ -356,6 +374,9 @@ export class ArkadiumBridge extends EventTarget {
   }
 
   #registerLifecycleCallbacks(): void {
+    if (this.#lifecycleCallbacksRegistered) {
+      return;
+    }
     const lifecycle = this.#module('lifecycle');
     if (!lifecycle || typeof lifecycle.registerEventCallback !== 'function' || !isRecord(lifecycle.LifecycleEvent)) {
       return;
@@ -375,10 +396,36 @@ export class ArkadiumBridge extends EventTarget {
           this.#resumeHandler,
         ]);
       }
+      this.#lifecycleCallbacksRegistered = true;
     } catch (error) {
       if (this.#debug) {
         console.warn('[Arkadium bridge] Unable to register lifecycle callbacks.', error);
       }
+    }
+  }
+
+  async #sendOrQueueLifecycle(method: string, ...args: unknown[]): Promise<void> {
+    if (this.#sdk && this.#hasMethod('lifecycle', method)) {
+      await this.#invoke('lifecycle', method, ...args);
+      return;
+    }
+
+    this.#lifecycleQueue.push({ method, args });
+    if (this.#lifecycleQueue.length > 64) {
+      this.#lifecycleQueue.splice(0, this.#lifecycleQueue.length - 64);
+    }
+    if (this.#debug) {
+      console.info(`[Arkadium lifecycle queued] ${method}`, ...args);
+    }
+  }
+
+  async #flushLifecycleQueue(): Promise<void> {
+    if (!this.#sdk || this.#lifecycleQueue.length === 0) {
+      return;
+    }
+    const pending = this.#lifecycleQueue.splice(0);
+    for (const call of pending) {
+      await this.#invoke('lifecycle', call.method, ...call.args);
     }
   }
 

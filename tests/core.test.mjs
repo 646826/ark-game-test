@@ -7,6 +7,7 @@ import { dailySeed, generatePuzzle } from '../dist/src/core/generator.js';
 import { suggestHint } from '../dist/src/core/hints.js';
 import { createDefaultProgress, sanitizeProgress, serializedSize } from '../dist/src/core/progress.js';
 import { calculateCompletion } from '../dist/src/core/scoring.js';
+import { tutorialForLevel } from '../dist/src/core/tutorial.js';
 import { Direction } from '../dist/src/core/types.js';
 
 test('direction masks rotate clockwise and preserve four-bit topology', () => {
@@ -44,6 +45,27 @@ test('generator is deterministic, unsolved at start, and solution-verified acros
     }
   }
   assert.ok(Math.min(...samples) >= 10);
+});
+
+test('three authored onboarding puzzles each teach one action and remain solution-verified', () => {
+  for (const level of [1, 2, 3]) {
+    const tutorial = tutorialForLevel(level);
+    assert.ok(tutorial, `missing tutorial level ${level}`);
+    const { puzzle, targetTileId } = tutorial;
+    const target = puzzle.tiles.find((tile) => tile.id === targetTileId);
+    assert.ok(target, `missing target tile for tutorial ${level}`);
+    assert.equal(target.fixed, false);
+    assert.equal(puzzle.optimalMoves, 1);
+    assert.equal(analyzeBoard(puzzle).solved, false);
+
+    target.rotation = (target.rotation + 1) % 4;
+    target.visualTurns += 1;
+    const solved = analyzeBoard(puzzle);
+    assert.equal(solved.solved, true, `tutorial ${level} must solve after one clockwise turn`);
+    assert.equal(solved.poweredPlants, solved.totalPlants);
+    assert.equal(solved.leaks.length, 0);
+  }
+  assert.equal(tutorialForLevel(4), null);
 });
 
 test('local AI hint always points to a legal, useful correction', () => {

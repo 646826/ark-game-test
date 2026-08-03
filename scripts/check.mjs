@@ -41,6 +41,19 @@ for (const signal of requiredSignals) {
   if (!source.includes(signal)) throw new Error(`Missing Arkadium integration signal: ${signal}`);
 }
 
+const releaseSafetySignals = [
+  ['#lifecycleQueue', 'Late SDK lifecycle outbox is required'],
+  ["reason: 'Completed'", 'Successful rounds must use a completion reason'],
+  ['return this.#previewRewards;', 'Rewarded fallback must be explicitly gated to dev preview'],
+  ['tutorialForLevel', 'Authored onboarding must remain wired into campaign startup'],
+];
+for (const [signal, reason] of releaseSafetySignals) {
+  if (!source.includes(signal)) throw new Error(`${reason}: missing ${signal}`);
+}
+if (source.includes("reason: 'No_Moves'")) {
+  throw new Error('Solved connectivity rounds must not report No_Moves.');
+}
+
 const cssBytes = (await stat(join(root, 'src/styles.css'))).size;
 if (cssBytes > 250_000) throw new Error(`CSS unexpectedly large: ${cssBytes} bytes`);
 console.log('Static production checks passed.');

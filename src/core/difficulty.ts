@@ -42,8 +42,10 @@ export function difficultyFor(level: number, rating: number, mode: 'campaign' | 
     };
   }
 
-  const progression = Math.floor((Math.max(1, level) - 1) / 3);
-  const adaptive = Math.round(clamp(rating, 0, 1) * 3);
+  // Levels 1–3 are authored lessons. Start the procedural campaign gently at level 4,
+  // then let the local skill model influence the ramp without creating a sudden 3x3 → 6x6 jump.
+  const progression = Math.floor(Math.max(0, level - 4) / 3);
+  const adaptive = Math.round(clamp(rating, 0, 1) * 2.4);
   const tier = clamp(progression + adaptive, 0, 10);
   const size = tier < 2 ? 5 : tier < 6 ? 6 : tier < 9 ? 7 : 8;
   const area = size * size;
