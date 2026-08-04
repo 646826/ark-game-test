@@ -1,7 +1,7 @@
 import { ClockworkGame } from './game/game.js';
 import { ArkadiumBridge } from './platform/arkadium.js';
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const app = document.querySelector<HTMLElement>('#app');
 if (!app) throw new Error('Application root is missing.');
 
@@ -16,4 +16,6 @@ void game.initialize().then(() => {
   app.innerHTML = `<section style="display:grid;place-items:center;width:100%;height:100%;padding:24px;text-align:center;background:#031817;color:#fff5d7;font:16px system-ui"><div><h1 style="font:500 2.4rem Georgia,serif">Clockwork Conservatory</h1><p>The glasshouse could not be opened. Reload the page to try again.</p></div></section>`;
 });
 
-window.addEventListener('pagehide', () => game.destroy(), { once: true });
+window.addEventListener('pagehide', (event) => {
+  if (!event.persisted) game.destroy();
+});

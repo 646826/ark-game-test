@@ -7,6 +7,7 @@ export class AudioEngine {
   #unlocked = false;
   #ambientTimer = 0;
   #ambientIndex = 0;
+  #suspended = false;
 
   public setEnabled(enabled: boolean): void {
     this.#enabled = enabled;
@@ -16,17 +17,20 @@ export class AudioEngine {
   public setMusicEnabled(enabled: boolean): void {
     this.#musicEnabled = enabled;
     if (this.#music) this.#music.gain.setTargetAtTime(enabled ? 0.09 : 0, this.#music.context.currentTime, 0.25);
-    if (enabled && this.#unlocked) this.#scheduleAmbient();
+    if (!enabled) window.clearTimeout(this.#ambientTimer);
+    else if (this.#unlocked && !this.#suspended) this.#scheduleAmbient();
   }
 
   public async unlock(): Promise<void> {
     if (this.#unlocked) {
       if (this.#context?.state === 'suspended') await this.#context.resume();
+      this.#suspended = false;
+      if (this.#musicEnabled) this.#scheduleAmbient();
       return;
     }
     const AudioContextConstructor = window.AudioContext ?? (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!AudioContextConstructor) return;
-    this.#context = new AudioContextConstructor();
+    this.#context = new AudioContextConstructor({ latencyHint: 'interactive' });
     this.#master = this.#context.createGain();
     this.#music = this.#context.createGain();
     this.#master.gain.value = this.#enabled ? 0.28 : 0;
@@ -34,35 +38,50 @@ export class AudioEngine {
     this.#music.connect(this.#master);
     this.#master.connect(this.#context.destination);
     this.#unlocked = true;
+    this.#suspended = false;
     await this.#context.resume();
     this.#scheduleAmbient();
   }
 
-  public turn(): void { this.#tone(330, 0.055, 'triangle', 0.13, 430); }
-  public connect(): void {
-    this.#tone(523.25, 0.11, 'sine', 0.16, 659.25);
-    window.setTimeout(() => this.#tone(783.99, 0.14, 'sine', 0.12, 880), 65);
+  public turn(progress = 0): void {
+    const start = 300 + clamp(progress, 0, 1) * 115;
+    this.#tone(start, 0.055, 'triangle', 0.13, start + 105);
   }
+
+  public connect(strength = 1): void {
+    const lift = Math.min(3, Math.max(1, Math.round(strength)));
+    this.#tone(523.25, 0.11, 'sine', 0.16, 659.25);
+    window.setTimeout(() => this.#tone(783.99, 0.14, 'sine', 0.12, 880), 58);
+    if (lift >= 2) window.setTimeout(() => this.#tone(1046.5, 0.16, 'sine', 0.08, 1174.66), 118);
+  }
+
   public denied(): void { this.#tone(150, 0.095, 'square', 0.07, 105); }
   public undo(): void { this.#tone(410, 0.09, 'triangle', 0.1, 280); }
+
   public hint(): void {
     this.#tone(659.25, 0.18, 'sine', 0.13, 987.77);
     window.setTimeout(() => this.#tone(987.77, 0.24, 'sine', 0.1, 1318.51), 110);
   }
+
   public bloom(): void {
-    const notes = [523.25, 659.25, 783.99, 1046.5];
-    notes.forEach((frequency, index) => window.setTimeout(() => this.#tone(frequency, 0.42, 'sine', 0.12, frequency * 1.08), index * 95));
+    const notes = [523.25, 659.25, 783.99, 1046.5, 1318.51];
+    notes.forEach((frequency, index) => window.setTimeout(() => this.#tone(frequency, 0.42, 'sine', 0.12, frequency * 1.08), index * 82));
   }
 
   public async suspend(): Promise<void> {
+    this.#suspended = true;
+    window.clearTimeout(this.#ambientTimer);
     if (this.#context?.state === 'running') await this.#context.suspend();
   }
 
   public async resume(): Promise<void> {
+    this.#suspended = false;
     if (this.#context?.state === 'suspended') await this.#context.resume();
+    if (this.#musicEnabled && this.#unlocked) this.#scheduleAmbient();
   }
 
   public destroy(): void {
+    this.#suspended = true;
     window.clearTimeout(this.#ambientTimer);
     void this.#context?.close();
     this.#context = null;
@@ -96,7 +115,7 @@ export class AudioEngine {
 
   #scheduleAmbient(): void {
     window.clearTimeout(this.#ambientTimer);
-    if (!this.#context || !this.#music || !this.#musicEnabled || !this.#unlocked) return;
+    if (!this.#context || !this.#music || !this.#musicEnabled || !this.#unlocked || this.#suspended || this.#context.state !== 'running') return;
     const chords: readonly (readonly number[])[] = [
       [130.81, 196, 261.63],
       [146.83, 220, 293.66],
@@ -128,4 +147,8 @@ export class AudioEngine {
     }
     this.#ambientTimer = window.setTimeout(() => this.#scheduleAmbient(), 6_800);
   }
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.max(minimum, Math.min(maximum, value));
 }

@@ -87,6 +87,7 @@ export interface GameSettings {
   language: SupportedLanguage;
   sound: boolean;
   music: boolean;
+  haptics: boolean;
   reducedMotion: boolean;
   highContrast: boolean;
   quality: QualityLevel;
@@ -103,7 +104,7 @@ export interface ActiveRunSnapshot {
 }
 
 export interface PersistedProgress {
-  schema: 3;
+  schema: 4;
   campaignLevel: number;
   totalScore: number;
   totalStars: number;

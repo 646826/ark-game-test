@@ -1,5 +1,6 @@
 import { analyzeBoard, clonePuzzle, rotationPeriod } from '../core/board.js';
 import { dailySeed, generatePuzzle } from '../core/generator.js';
+import { detectDeviceSignals, resolveRenderProfile } from '../core/performance.js';
 import { createDefaultProgress, sanitizeProgress, SAVE_KEY, specimenForLevel } from '../core/progress.js';
 import { calculateCompletion } from '../core/scoring.js';
 import { tutorialForLevel } from '../core/tutorial.js';
@@ -23,6 +24,7 @@ import { ConservatoryRenderer } from './renderer.js';
 
 const FREE_HINTS = 3;
 const COMPLETION_DELAY_MS = 1_850;
+const BLOCKING_ACTIONS = new Set(['continue-run', 'continue-restoration', 'current-chamber', 'daily', 'daily-map', 'zen', 'next', 'replay', 'confirm-restart']);
 const CHAMBERS = [
   { name: 'Sun Atrium', start: 1 },
   { name: 'Orchid Atrium', start: 4 },
@@ -55,6 +57,7 @@ export class ClockworkGame {
   readonly #modal: HTMLDialogElement;
   readonly #modalContent: HTMLElement;
   readonly #toast: HTMLElement;
+  readonly #feedback: HTMLElement;
   readonly #liveRegion: HTMLElement;
 
   #progress: PersistedProgress;
@@ -76,7 +79,16 @@ export class ClockworkGame {
   #pauseReasons = new Set<PauseReason>();
   #saveTimer = 0;
   #toastTimer = 0;
-  #hudTimer = 0;
+  #feedbackTimer = 0;
+  #qualityTimer = 0;
+  #hoverFrame = 0;
+  #completionFrame = 0;
+  #pendingHover: { x: number; y: number } | null = null;
+  #pointerDown: { id: string; x: number; y: number; pointerId: number; moved: boolean } | null = null;
+  #navigationBusy = false;
+  #runToken = 0;
+  #saveQueue: Promise<void> = Promise.resolve();
+  #destroyed = false;
 
   public constructor(app: HTMLElement, bridge: ArkadiumBridge, version: string) {
     this.#app = app;
@@ -98,13 +110,28 @@ export class ClockworkGame {
     this.#modal = must<HTMLDialogElement>(app, '#game-modal');
     this.#modalContent = must(app, '#modal-content');
     this.#toast = must(app, '#toast');
+    this.#feedback = must(app, '#board-feedback');
     this.#liveRegion = must(app, '#live-region');
     this.#renderer = new ConservatoryRenderer(this.#canvas);
     this.#bindEvents();
     this.#bridge.bindPauseHandlers(() => this.pause('host'), () => this.resume('host'));
     this.#bridge.addEventListener('connected', () => this.#renderSdkStatus());
     this.#bridge.addEventListener('standalone', () => this.#renderSdkStatus());
-    this.#hudTimer = window.setInterval(() => this.#renderHud(), 250);
+    this.#canvas.addEventListener('renderqualitychange', (event) => {
+      const quality = event instanceof CustomEvent && event.detail && typeof event.detail.quality === 'string' ? event.detail.quality : 'balanced';
+      this.#app.dataset.quality = quality;
+      this.#showToast(this.#i18n.t('qualityAdjusted'), 2_200);
+    });
+    const debug = new URLSearchParams(location.search).get('debug') === '1';
+    if (debug) {
+      (window as unknown as { __clockworkDiagnostics?: () => unknown }).__clockworkDiagnostics = () => ({
+        version: this.#version,
+        screen: this.#screen,
+        quality: this.#app.dataset.quality,
+        puzzle: this.#puzzle ? { mode: this.#puzzle.mode, level: this.#puzzle.level, tiles: this.#puzzle.tiles.length } : null,
+        renderer: this.#renderer.getDiagnostics(),
+      });
+    }
   }
 
   public async initialize(): Promise<void> {
@@ -141,9 +168,14 @@ export class ClockworkGame {
   }
 
   public destroy(): void {
-    window.clearInterval(this.#hudTimer);
+    this.#destroyed = true;
+    this.#runToken += 1;
     window.clearTimeout(this.#saveTimer);
     window.clearTimeout(this.#toastTimer);
+    window.clearTimeout(this.#feedbackTimer);
+    window.clearTimeout(this.#qualityTimer);
+    cancelAnimationFrame(this.#hoverFrame);
+    cancelAnimationFrame(this.#completionFrame);
     this.#renderer.destroy();
     this.#audio.destroy();
   }
@@ -179,18 +211,19 @@ export class ClockworkGame {
       const action = element.dataset.action;
       if (action) void this.#handleAction(action);
     });
-    this.#canvas.addEventListener('pointerup', (event) => {
-      if (!this.#canInteract()) return;
-      const tileId = this.#renderer.hitTest(event.clientX, event.clientY);
-      if (!tileId) return;
-      this.#selectedId = tileId;
-      this.#renderer.setSelected(tileId);
-      this.#rotateTile(tileId);
+    this.#canvas.addEventListener('pointerdown', (event) => this.#handleCanvasPointerDown(event));
+    this.#canvas.addEventListener('pointermove', (event) => this.#handleCanvasPointerMove(event));
+    this.#canvas.addEventListener('pointerup', (event) => this.#handleCanvasPointerEnd(event, false));
+    this.#canvas.addEventListener('pointercancel', (event) => this.#handleCanvasPointerEnd(event, true));
+    this.#canvas.addEventListener('lostpointercapture', () => {
+      this.#pointerDown = null;
+      this.#renderer.setPressed(null);
     });
-    this.#canvas.addEventListener('pointermove', (event) => {
-      this.#renderer.setHovered(this.#canInteract() ? this.#renderer.hitTest(event.clientX, event.clientY) : null);
+    this.#canvas.addEventListener('pointerleave', () => {
+      if (!this.#pointerDown) this.#renderer.resetPointer();
+      this.#pendingHover = null;
+      this.#renderer.setHovered(null);
     });
-    this.#canvas.addEventListener('pointerleave', () => this.#renderer.setHovered(null));
     this.#canvas.addEventListener('keydown', (event) => this.#handleKey(event));
     this.#app.addEventListener('change', (event) => this.#handleSettingChange(event));
     this.#modal.addEventListener('close', () => {
@@ -211,96 +244,191 @@ export class ClockworkGame {
         this.resume('visibility');
       }
     });
+    // Chromium may freeze a background page without another visibility transition.
+    // Listening to Page Lifecycle events keeps timers, audio, rendering and saves safe
+    // during tab discards and BFCache round-trips while remaining a no-op elsewhere.
+    document.addEventListener('freeze', () => {
+      this.pause('visibility');
+      this.#scheduleSave(0);
+    });
+    document.addEventListener('resume', () => {
+      if (document.visibilityState === 'visible') this.resume('visibility');
+    });
+    window.addEventListener('resize', () => this.#scheduleAutoQuality(), { passive: true });
+    const connection = (navigator as Navigator & { connection?: { addEventListener?: (type: string, listener: EventListener) => void } }).connection;
+    connection?.addEventListener?.('change', () => this.#scheduleAutoQuality());
     window.addEventListener('blur', () => this.pause('visibility'));
     window.addEventListener('focus', () => {
       if (document.visibilityState === 'visible') this.resume('visibility');
     });
-    window.addEventListener('pagehide', () => {
+    window.addEventListener('pageshow', (event) => {
+      if (event.persisted && document.visibilityState === 'visible') this.resume('visibility');
+    });
+    window.addEventListener('pagehide', (event) => {
       this.#pauseTimer();
       void this.#saveNow();
-      void this.#bridge.gameEnd();
+      if (!event.persisted) void this.#bridge.gameEnd();
       void this.#audio.suspend();
     });
     window.addEventListener('error', (event) => void this.#bridge.reportError(event.error ?? event.message));
     window.addEventListener('unhandledrejection', (event) => void this.#bridge.reportError(event.reason));
   }
 
+  #handleCanvasPointerDown(event: PointerEvent): void {
+    if (!this.#canInteract()) return;
+    event.preventDefault();
+    const tileId = this.#renderer.hitTest(event.clientX, event.clientY);
+    if (!tileId) return;
+    try { this.#canvas.setPointerCapture(event.pointerId); } catch { /* optional browser capability */ }
+    this.#pointerDown = { id: tileId, x: event.clientX, y: event.clientY, pointerId: event.pointerId, moved: false };
+    this.#selectedId = tileId;
+    this.#renderer.setSelected(tileId);
+    this.#renderer.setPressed(tileId);
+    if (event.pointerType !== 'touch') this.#renderer.setPointer(event.clientX, event.clientY);
+  }
+
+  #handleCanvasPointerMove(event: PointerEvent): void {
+    const pointer = this.#pointerDown;
+    if (pointer && pointer.pointerId === event.pointerId) {
+      const moved = Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y) > 12;
+      if (moved && !pointer.moved) {
+        pointer.moved = true;
+        this.#renderer.setPressed(null);
+      }
+    }
+    if (event.pointerType === 'touch') return;
+    this.#renderer.setPointer(event.clientX, event.clientY);
+    this.#pendingHover = { x: event.clientX, y: event.clientY };
+    if (this.#hoverFrame) return;
+    this.#hoverFrame = requestAnimationFrame(() => {
+      this.#hoverFrame = 0;
+      const pending = this.#pendingHover;
+      this.#pendingHover = null;
+      this.#renderer.setHovered(pending && this.#canInteract() ? this.#renderer.hitTest(pending.x, pending.y) : null);
+    });
+  }
+
+  #handleCanvasPointerEnd(event: PointerEvent, cancelled: boolean): void {
+    const pointer = this.#pointerDown;
+    if (!pointer || pointer.pointerId !== event.pointerId) return;
+    this.#pointerDown = null;
+    this.#renderer.setPressed(null);
+    try { this.#canvas.releasePointerCapture(event.pointerId); } catch { /* optional browser capability */ }
+    if (cancelled || pointer.moved || !this.#canInteract()) return;
+    const tileId = this.#renderer.hitTest(event.clientX, event.clientY);
+    if (!tileId || tileId !== pointer.id) return;
+    this.#selectedId = tileId;
+    this.#renderer.setSelected(tileId);
+    this.#rotateTile(tileId);
+  }
+
+  #scheduleAutoQuality(): void {
+    if (this.#progress.settings.quality !== 'auto') return;
+    window.clearTimeout(this.#qualityTimer);
+    this.#qualityTimer = window.setTimeout(() => {
+      if (this.#destroyed) return;
+      this.#applySettings();
+    }, 240);
+  }
+
   async #handleAction(action: string): Promise<void> {
-    switch (action) {
-      case 'continue-run':
-        if (this.#progress.activeRun) await this.#startMode(this.#progress.activeRun.mode, true);
-        else await this.#startMode('campaign', false);
-        break;
-      case 'campaign':
-      case 'open-map':
-        this.#showMap();
-        break;
-      case 'continue-restoration':
-      case 'current-chamber':
-        await this.#startMode('campaign', false);
-        break;
-      case 'daily':
-      case 'daily-map':
-        await this.#startMode('daily', false);
-        break;
-      case 'zen':
-        await this.#startMode('zen', false);
-        break;
-      case 'help':
-        await this.#bridge.helpOpened();
-        this.#openHelp();
-        break;
-      case 'settings':
-        this.#openSettings();
-        break;
-      case 'close-modal':
-        this.#closeModal();
-        break;
-      case 'pause':
-        this.pause('manual');
-        break;
-      case 'resume':
-        this.resume('manual');
-        break;
-      case 'rotate-left':
-        this.#renderer.rotateView(-1);
-        break;
-      case 'rotate-right':
-        this.#renderer.rotateView(1);
-        break;
-      case 'undo':
-        this.#undo();
-        break;
-      case 'hint':
-        await this.#useHint();
-        break;
-      case 'restart':
-        this.#openRestartConfirmation();
-        break;
-      case 'confirm-restart':
-        this.#closeModal();
-        await this.#restartPuzzle();
-        break;
-      case 'menu':
-      case 'return-menu':
-        this.#showMenu();
-        break;
-      case 'next':
-        await this.#nextPuzzle();
-        break;
-      case 'replay':
-        await this.#replayPuzzle();
-        break;
-      case 'dismiss-coach':
-        this.#coach.hidden = true;
-        this.#canvas.focus({ preventScroll: true });
-        break;
-      default:
-        break;
+    const blocking = BLOCKING_ACTIONS.has(action);
+    if (blocking && this.#navigationBusy) return;
+    if (blocking) {
+      this.#navigationBusy = true;
+      this.#app.dataset.busy = 'true';
+      this.#app.setAttribute('aria-busy', 'true');
+    }
+    try {
+      switch (action) {
+        case 'continue-run':
+          if (this.#progress.activeRun) await this.#startMode(this.#progress.activeRun.mode, true);
+          else await this.#startMode('campaign', false);
+          break;
+        case 'campaign':
+        case 'open-map':
+          this.#showMap();
+          break;
+        case 'continue-restoration':
+        case 'current-chamber':
+          await this.#startMode('campaign', false);
+          break;
+        case 'daily':
+        case 'daily-map':
+          await this.#startMode('daily', false);
+          break;
+        case 'zen':
+          await this.#startMode('zen', false);
+          break;
+        case 'help':
+          await this.#bridge.helpOpened();
+          this.#openHelp();
+          break;
+        case 'settings':
+          this.#openSettings();
+          break;
+        case 'close-modal':
+          this.#closeModal();
+          break;
+        case 'pause':
+          this.pause('manual');
+          break;
+        case 'resume':
+          this.resume('manual');
+          break;
+        case 'rotate-left':
+          this.#renderer.rotateView(-1);
+          this.#haptic(5);
+          break;
+        case 'rotate-right':
+          this.#renderer.rotateView(1);
+          this.#haptic(5);
+          break;
+        case 'undo':
+          this.#undo();
+          break;
+        case 'hint':
+          await this.#useHint();
+          break;
+        case 'restart':
+          this.#openRestartConfirmation();
+          break;
+        case 'confirm-restart':
+          this.#closeModal();
+          await this.#restartPuzzle();
+          break;
+        case 'menu':
+        case 'return-menu':
+          this.#showMenu();
+          break;
+        case 'next':
+          await this.#nextPuzzle();
+          break;
+        case 'replay':
+          await this.#replayPuzzle();
+          break;
+        case 'dismiss-coach':
+          this.#coach.hidden = true;
+          this.#haptic(5);
+          this.#canvas.focus({ preventScroll: true });
+          break;
+        default:
+          break;
+      }
+    } catch (error) {
+      await this.#bridge.reportError(error);
+      this.#showToast('The conservatory paused for a moment. Please try again.');
+    } finally {
+      if (blocking) {
+        this.#navigationBusy = false;
+        delete this.#app.dataset.busy;
+        this.#app.removeAttribute('aria-busy');
+      }
     }
   }
 
   async #startMode(mode: GameMode, resumePreferred: boolean): Promise<void> {
+    const token = ++this.#runToken;
     const snapshot = this.#progress.activeRun;
     const today = dailySeed();
     const canResume = Boolean(resumePreferred && snapshot && (snapshot.mode !== 'daily' || snapshot.seed === today));
@@ -347,18 +475,25 @@ export class ClockworkGame {
     this.#startTimer();
     this.#scheduleSave(0);
     await this.#bridge.gameStart();
+    if (!this.#isCurrentRun(token, puzzle)) return;
     await this.#bridge.levelStart(puzzle.level);
+    if (!this.#isCurrentRun(token, puzzle)) return;
     await this.#bridge.customEvent('Puzzle', 'Level_Start', {
       mode: puzzle.mode,
       level: puzzle.level,
       tiles: puzzle.tiles.length,
-      plants: this.#analysis.totalPlants,
+      plants: this.#analysis?.totalPlants ?? 0,
     });
-    if (this.#analysis.solved && !this.#completionPending) {
+    if (!this.#isCurrentRun(token, puzzle)) return;
+    if (this.#analysis?.solved && !this.#completionPending) {
       this.#completionPending = true;
-      window.setTimeout(() => void this.#completePuzzle(), 100);
+      window.setTimeout(() => {
+        if (this.#isCurrentRun(token, puzzle)) void this.#completePuzzle();
+      }, 100);
     }
-    requestAnimationFrame(() => this.#canvas.focus({ preventScroll: true }));
+    requestAnimationFrame(() => {
+      if (this.#isCurrentRun(token, puzzle)) this.#canvas.focus({ preventScroll: true });
+    });
   }
 
   #restoreSnapshot(snapshot: ActiveRunSnapshot): PuzzleDefinition {
@@ -383,19 +518,24 @@ export class ClockworkGame {
     if (!tile) return;
     if (puzzle.tutorial && tile.id !== puzzle.tutorial.targetId) {
       this.#audio.denied();
+      this.#haptic([8, 24, 8]);
       this.#selectedId = puzzle.tutorial.targetId;
       this.#renderer.setSelected(this.#selectedId);
       this.#renderer.setCoach(this.#selectedId);
+      this.#renderer.pulseTile(this.#selectedId, 1.15);
       this.#showToast('Rotate the glowing mechanism');
       return;
     }
     const period = rotationPeriod(tile.baseMask);
     if (tile.fixed || period === 1) {
       this.#audio.denied();
+      this.#haptic(9);
+      this.#renderer.pulseTile(tile.id, 0.55);
       this.#showToast(this.#i18n.t('fixed'));
       this.#announce(this.#i18n.t('fixed'));
       return;
     }
+
     this.#history.push({ tileId, rotation: tile.rotation, visualTurns: tile.visualTurns });
     tile.rotation = (tile.rotation + 1) % period;
     tile.visualTurns += 1;
@@ -404,21 +544,47 @@ export class ClockworkGame {
     this.#analysis = analyzeBoard(puzzle);
     this.#renderer.setAnalysis(this.#analysis);
     this.#renderer.clearHint();
+
     if (!this.#firstMoveSent) {
       this.#firstMoveSent = true;
       void this.#bridge.firstMove();
     }
-    if (this.#analysis.poweredPlants > previous.poweredPlants || this.#analysis.leaks.length < previous.leaks.length) this.#audio.connect();
-    else this.#audio.turn();
+
+    const bloomDelta = this.#analysis.poweredPlants - previous.poweredPlants;
+    const leakDelta = previous.leaks.length - this.#analysis.leaks.length;
+    const progressDelta = this.#analysis.progress - previous.progress;
+    const improved = bloomDelta > 0 || leakDelta > 0 || progressDelta > 0.04;
+    this.#renderer.pulseTile(tile.id, improved ? 1.22 : 0.72);
+    if (bloomDelta > 0 || leakDelta > 0) {
+      this.#audio.connect(Math.max(1, bloomDelta + leakDelta));
+      this.#haptic(bloomDelta > 0 && leakDelta > 0 ? [12, 20, 18] : [10, 16, 13]);
+      const messages: string[] = [];
+      if (bloomDelta > 0) messages.push(`${this.#i18n.t('bloomAwakened')} +${bloomDelta}`);
+      if (leakDelta > 0) messages.push(`${this.#i18n.t('leakSealed')} +${leakDelta}`);
+      this.#showFeedback(messages.join(' · '), bloomDelta > 0 ? 'bloom' : 'leak');
+    } else {
+      this.#audio.turn(this.#analysis.progress);
+      this.#haptic(5);
+    }
+
     this.#renderHud();
     this.#renderObjective();
+    this.#pulseHud('[data-stat="moves"]');
+    if (bloomDelta !== 0) this.#pulseHud('[data-stat="blooms"]');
+    if (leakDelta !== 0) this.#pulseHud('[data-stat="leaks"]');
+    if (Math.abs(progressDelta) > 0.01) this.#pulseHud('[data-flow-meter]');
     this.#scheduleSave();
     this.#announce(`${this.#analysis.poweredPlants} of ${this.#analysis.totalPlants} blooms powered.`);
+
     if (this.#analysis.solved && !this.#completionPending) {
+      const token = this.#runToken;
       this.#completionPending = true;
       this.#coach.hidden = true;
       this.#renderer.setCoach(null);
-      window.setTimeout(() => void this.#completePuzzle(), this.#progress.settings.reducedMotion ? 70 : 520);
+      this.#haptic([20, 28, 34]);
+      window.setTimeout(() => {
+        if (this.#isCurrentRun(token, puzzle)) void this.#completePuzzle();
+      }, this.#progress.settings.reducedMotion ? 70 : 520);
     }
   }
 
@@ -427,6 +593,7 @@ export class ClockworkGame {
     const record = this.#history.pop();
     if (!puzzle || !record || this.#completionPending) {
       this.#audio.denied();
+      this.#haptic(8);
       this.#showToast(this.#i18n.t('undoEmpty'));
       return;
     }
@@ -440,53 +607,69 @@ export class ClockworkGame {
     this.#renderer.setSelected(tile.id);
     this.#renderer.setAnalysis(this.#analysis);
     this.#renderer.syncTile(tile);
+    this.#renderer.pulseTile(tile.id, 0.82);
     this.#audio.undo();
+    this.#haptic(7);
     this.#renderHud();
     this.#renderObjective();
+    this.#pulseHud('[data-stat="moves"]');
     this.#scheduleSave();
   }
 
   async #useHint(): Promise<void> {
     const puzzle = this.#puzzle;
+    const token = this.#runToken;
     if (!puzzle || !this.#analysis || this.#hintBusy || this.#completionPending) return;
     this.#hintBusy = true;
     this.#renderHud();
     this.#showToast(this.#i18n.t('hintThinking'), 1_800);
-    if (this.#hintsUsed >= FREE_HINTS) {
-      const rewarded = await this.#bridge.showRewarded();
-      if (!rewarded) {
-        this.#hintBusy = false;
-        this.#showToast(this.#i18n.t('adUnavailable'));
-        this.#renderHud();
+    try {
+      if (this.#hintsUsed >= FREE_HINTS) {
+        const rewarded = await this.#bridge.showRewarded();
+        if (!this.#isCurrentRun(token, puzzle)) return;
+        if (!rewarded) {
+          this.#showToast(this.#i18n.t('adUnavailable'));
+          return;
+        }
+      }
+      await delay(this.#progress.settings.reducedMotion ? 25 : 260);
+      if (!this.#isCurrentRun(token, puzzle)) return;
+      const { suggestHint } = await import('../core/board.js');
+      if (!this.#isCurrentRun(token, puzzle)) return;
+      const suggestion = suggestHint(puzzle);
+      if (!suggestion) {
+        this.#showToast(this.#i18n.t('noHint'));
         return;
       }
-    }
-    await delay(this.#progress.settings.reducedMotion ? 25 : 260);
-    const { suggestHint } = await import('../core/board.js');
-    const suggestion = suggestHint(puzzle);
-    this.#hintBusy = false;
-    if (!suggestion) {
-      this.#showToast(this.#i18n.t('noHint'));
+      const tile = puzzle.tiles.find((candidate) => candidate.id === suggestion.tileId);
+      if (!tile) return;
+      this.#hintsUsed += 1;
+      this.#selectedId = tile.id;
+      this.#renderer.setSelected(tile.id);
+      this.#renderer.setHint(tile.id);
+      this.#renderer.pulseTile(tile.id, 1.28);
+      this.#audio.hint();
+      this.#haptic([8, 20, 12]);
+      const turns = suggestion.rotations === 1 ? this.#i18n.t('once') : suggestion.rotations === 2 ? this.#i18n.t('twice') : this.#i18n.t('threeTimes');
+      const message = this.#i18n.t('hintInstruction', { row: tile.y + 1, column: tile.x + 1, turns });
+      this.#showToast(message, 4_800);
+      this.#announce(message);
       this.#renderHud();
-      return;
+      this.#scheduleSave();
+      await this.#bridge.customEvent('Garden_Hint', 'Shown', { mode: puzzle.mode, level: puzzle.level, rotations: suggestion.rotations });
+    } catch (error) {
+      await this.#bridge.reportError(error);
+      if (this.#isCurrentRun(token, puzzle)) this.#showToast(this.#i18n.t('noHint'));
+    } finally {
+      if (this.#isCurrentRun(token, puzzle)) {
+        this.#hintBusy = false;
+        this.#renderHud();
+      }
     }
-    const tile = puzzle.tiles.find((candidate) => candidate.id === suggestion.tileId);
-    if (!tile) return;
-    this.#hintsUsed += 1;
-    this.#selectedId = tile.id;
-    this.#renderer.setSelected(tile.id);
-    this.#renderer.setHint(tile.id);
-    this.#audio.hint();
-    const turns = suggestion.rotations === 1 ? this.#i18n.t('once') : suggestion.rotations === 2 ? this.#i18n.t('twice') : this.#i18n.t('threeTimes');
-    const message = this.#i18n.t('hintInstruction', { row: tile.y + 1, column: tile.x + 1, turns });
-    this.#showToast(message, 4_800);
-    this.#announce(message);
-    this.#renderHud();
-    this.#scheduleSave();
-    await this.#bridge.customEvent('Garden_Hint', 'Shown', { mode: puzzle.mode, level: puzzle.level, rotations: suggestion.rotations });
   }
 
   async #completePuzzle(): Promise<void> {
+    const token = this.#runToken;
     const puzzle = this.#puzzle;
     const analysis = this.#analysis;
     if (!puzzle || !analysis || !analysis.solved) {
@@ -519,6 +702,7 @@ export class ClockworkGame {
     this.#coach.hidden = true;
     this.#app.dataset.state = 'celebrating';
     this.#audio.bloom();
+    this.#haptic([24, 32, 42, 30, 56]);
     const duration = this.#progress.settings.reducedMotion ? 320 : COMPLETION_DELAY_MS;
     this.#renderer.startVictorySequence(duration);
     const platformWork = (async (): Promise<boolean> => {
@@ -527,13 +711,37 @@ export class ClockworkGame {
       await this.#bridge.gameWon(stats.score, elapsedMs / 1_000);
       return puzzle.mode === 'daily' ? this.#bridge.postDailyScore(stats.score) : false;
     })();
-    const [, leaderboard] = await Promise.all([delay(duration), platformWork]);
+    const [, leaderboard] = await Promise.all([delay(duration), withTimeout(platformWork, 2_600, false)]);
+    if (!this.#isCurrentRun(token, puzzle)) return;
     this.#renderCompletion(stats, unlocked, dailyRecord, leaderboard);
     this.#showScreen('complete');
+    this.#animateCompletion(stats);
     this.#gameHud.hidden = true;
     this.#canvas.tabIndex = -1;
     this.#completionPending = false;
     delete this.#app.dataset.state;
+  }
+
+  #animateCompletion(stats: CompletionStats): void {
+    cancelAnimationFrame(this.#completionFrame);
+    const score = this.#completeScreen.querySelector<HTMLElement>('[data-final-score]');
+    const card = this.#completeScreen.querySelector<HTMLElement>('.completion-card');
+    if (!score || this.#progress.settings.reducedMotion) return;
+    score.textContent = this.#i18n.number(0);
+    card?.classList.remove('completion-live');
+    void card?.offsetWidth;
+    card?.classList.add('completion-live');
+    const started = performance.now();
+    const duration = 920;
+    const frame = (time: number): void => {
+      if (this.#screen !== 'complete') return;
+      const progress = Math.max(0, Math.min(1, (time - started) / duration));
+      const eased = 1 - Math.pow(1 - progress, 3);
+      score.textContent = this.#i18n.number(Math.round(stats.score * eased));
+      if (progress < 1) this.#completionFrame = requestAnimationFrame(frame);
+      else this.#completionFrame = 0;
+    };
+    this.#completionFrame = requestAnimationFrame(frame);
   }
 
   #updateStreak(date: string): void {
@@ -571,6 +779,7 @@ export class ClockworkGame {
   }
 
   async #loadFreshPuzzle(fresh: PuzzleDefinition): Promise<void> {
+    const token = ++this.#runToken;
     this.#puzzle = fresh;
     this.#analysis = analyzeBoard(fresh);
     this.#initialLeaks = Math.max(1, this.#analysis.leaks.length);
@@ -596,13 +805,23 @@ export class ClockworkGame {
     this.#startTimer();
     this.#scheduleSave(0);
     await this.#bridge.levelStart(fresh.level);
-    this.#canvas.focus({ preventScroll: true });
+    if (this.#isCurrentRun(token, fresh)) this.#canvas.focus({ preventScroll: true });
   }
 
   #showMenu(): void {
-    this.#pauseTimer();
+    if (this.#screen === 'playing') {
+      this.#pauseTimer();
+      void this.#saveNow(true);
+    }
+    this.#runToken += 1;
+    this.#hintBusy = false;
+    this.#pointerDown = null;
     this.#pauseReasons.clear();
+    this.#renderer.setPressed(null);
+    this.#renderer.resetPointer();
     this.#renderer.clearPuzzle();
+    this.#puzzle = null;
+    this.#analysis = null;
     this.#renderMenu();
     this.#showScreen('menu');
     this.#gameHud.hidden = true;
@@ -614,9 +833,19 @@ export class ClockworkGame {
   }
 
   #showMap(): void {
-    this.#pauseTimer();
+    if (this.#screen === 'playing') {
+      this.#pauseTimer();
+      void this.#saveNow(true);
+    }
+    this.#runToken += 1;
+    this.#hintBusy = false;
+    this.#pointerDown = null;
     this.#pauseReasons.clear();
+    this.#renderer.setPressed(null);
+    this.#renderer.resetPointer();
     this.#renderer.clearPuzzle();
+    this.#puzzle = null;
+    this.#analysis = null;
     this.#renderMap();
     this.#showScreen('map');
     this.#gameHud.hidden = true;
@@ -629,6 +858,10 @@ export class ClockworkGame {
   }
 
   #showScreen(screen: Screen): void {
+    if (screen !== 'complete') {
+      cancelAnimationFrame(this.#completionFrame);
+      this.#completionFrame = 0;
+    }
     this.#screen = screen;
     this.#app.dataset.screen = screen;
     this.#menuScreen.hidden = screen !== 'menu';
@@ -700,6 +933,15 @@ export class ClockworkGame {
     setText(this.#gameHud, '[data-hud-blooms]', `${analysis.poweredPlants} / ${analysis.totalPlants}`);
     const sealed = Math.max(0, this.#initialLeaks - analysis.leaks.length);
     setText(this.#gameHud, '[data-hud-leaks]', `${sealed} / ${this.#initialLeaks}`);
+    const flow = this.#gameHud.querySelector<HTMLElement>('[data-flow-meter]');
+    if (flow) {
+      const percent = Math.round(analysis.progress * 100);
+      flow.style.setProperty('--flow', `${percent}%`);
+      flow.setAttribute('aria-valuenow', String(percent));
+      flow.dataset.complete = String(analysis.solved);
+    }
+    this.#app.dataset.flow = String(Math.round(analysis.progress * 100));
+    this.#app.style.setProperty('--flow-level', analysis.progress.toFixed(3));
     const hintButton = this.#toolbar.querySelector<HTMLButtonElement>('[data-action="hint"]');
     if (hintButton) {
       hintButton.disabled = this.#hintBusy;
@@ -721,6 +963,8 @@ export class ClockworkGame {
     });
     setText(this.#objective, '[data-objective-text]', message);
     this.#objective.dataset.clear = String(analysis.leaks.length === 0);
+    this.#objective.dataset.progress = analysis.progress > 0.82 ? 'near' : analysis.progress > 0.45 ? 'mid' : 'early';
+    this.#objective.style.setProperty('--objective-progress', `${Math.round(analysis.progress * 100)}%`);
   }
 
   #renderCoach(): void {
@@ -734,7 +978,17 @@ export class ClockworkGame {
 
   #renderCompletion(stats: CompletionStats, unlocked: PlantKind | null, dailyRecord: boolean, leaderboard: boolean): void {
     setText(this.#completeScreen, '[data-final-score]', this.#i18n.number(stats.score));
-    setText(this.#completeScreen, '[data-final-stars]', '★'.repeat(stats.stars) + '☆'.repeat(3 - stats.stars));
+    const stars = this.#completeScreen.querySelector<HTMLElement>('[data-final-stars]');
+    if (stars) {
+      const nodes = Array.from({ length: 3 }, (_, index) => {
+        const star = document.createElement('span');
+        star.textContent = index < stats.stars ? '★' : '☆';
+        star.style.setProperty('--star-index', String(index));
+        star.dataset.filled = String(index < stats.stars);
+        return star;
+      });
+      stars.replaceChildren(...nodes);
+    }
     setText(this.#completeScreen, '[data-final-moves]', this.#i18n.number(stats.moves));
     setText(this.#completeScreen, '[data-final-time]', this.#i18n.time(stats.elapsedMs));
     setText(this.#completeScreen, '[data-final-best]', this.#i18n.number(this.#progress.bestScore));
@@ -780,6 +1034,7 @@ export class ClockworkGame {
       <div class="settings-list">
         ${settingToggle('setting-sound', this.#i18n.t('sound'), settings.sound)}
         ${settingToggle('setting-music', this.#i18n.t('music'), settings.music)}
+        ${settingToggle('setting-haptics', this.#i18n.t('haptics'), settings.haptics)}
         ${settingToggle('setting-motion', this.#i18n.t('reducedMotion'), settings.reducedMotion)}
         ${settingToggle('setting-contrast', this.#i18n.t('highContrast'), settings.highContrast)}
         <label class="setting-row"><span>${escapeHtml(this.#i18n.t('quality'))}</span><select id="setting-quality">
@@ -838,6 +1093,9 @@ export class ClockworkGame {
     } else if (target.id === 'setting-music' && target instanceof HTMLInputElement) {
       this.#progress.settings.music = target.checked;
       this.#audio.setMusicEnabled(target.checked);
+    } else if (target.id === 'setting-haptics' && target instanceof HTMLInputElement) {
+      this.#progress.settings.haptics = target.checked;
+      if (target.checked) this.#haptic(8);
     } else if (target.id === 'setting-motion' && target instanceof HTMLInputElement) {
       this.#progress.settings.reducedMotion = target.checked;
       this.#applySettings();
@@ -853,14 +1111,16 @@ export class ClockworkGame {
 
   #applySettings(): void {
     const settings = this.#progress.settings;
+    const profile = resolveRenderProfile(settings.quality, detectDeviceSignals());
     this.#audio.setEnabled(settings.sound);
     this.#audio.setMusicEnabled(settings.music);
     this.#renderer.setReducedMotion(settings.reducedMotion);
     this.#renderer.setHighContrast(settings.highContrast);
-    this.#renderer.setQuality(resolveQuality(settings.quality));
+    this.#renderer.setRenderProfile(profile);
     this.#app.dataset.motion = settings.reducedMotion ? 'reduced' : 'full';
     this.#app.dataset.contrast = settings.highContrast ? 'high' : 'normal';
-    this.#app.dataset.quality = resolveQuality(settings.quality);
+    this.#app.dataset.quality = profile.quality;
+    this.#app.dataset.qualityMode = settings.quality;
   }
 
   #applyTranslations(): void {
@@ -951,7 +1211,41 @@ export class ClockworkGame {
         elapsedMs: this.#elapsedMs(),
       };
     }
-    await this.#bridge.saveProgress(SAVE_KEY, this.#progress);
+    const payload = cloneProgress(this.#progress);
+    const task = this.#saveQueue.then(() => this.#bridge.saveProgress(SAVE_KEY, payload));
+    this.#saveQueue = task.catch(async (error: unknown) => {
+      await this.#bridge.reportError(error);
+    });
+    await this.#saveQueue;
+  }
+
+  #isCurrentRun(token: number, puzzle?: PuzzleDefinition): boolean {
+    return !this.#destroyed && token === this.#runToken && (!puzzle || this.#puzzle === puzzle);
+  }
+
+  #haptic(pattern: number | number[]): void {
+    if (!this.#progress.settings.haptics || document.visibilityState !== 'visible' || typeof navigator.vibrate !== 'function') return;
+    try { navigator.vibrate(pattern); } catch { /* Haptics are optional. */ }
+  }
+
+  #showFeedback(message: string, kind: 'bloom' | 'leak' | 'flow'): void {
+    window.clearTimeout(this.#feedbackTimer);
+    this.#feedback.textContent = message;
+    this.#feedback.dataset.kind = kind;
+    this.#feedback.hidden = false;
+    this.#feedback.classList.remove('feedback-enter');
+    void this.#feedback.offsetWidth;
+    this.#feedback.classList.add('feedback-enter');
+    this.#feedbackTimer = window.setTimeout(() => { this.#feedback.hidden = true; }, this.#progress.settings.reducedMotion ? 850 : 1_450);
+  }
+
+  #pulseHud(selector: string): void {
+    const element = this.#gameHud.querySelector<HTMLElement>(selector);
+    if (!element || this.#progress.settings.reducedMotion) return;
+    element.classList.remove('hud-pulse');
+    void element.offsetWidth;
+    element.classList.add('hud-pulse');
+    window.setTimeout(() => element.classList.remove('hud-pulse'), 520);
   }
 
   #showToast(message: string, durationMs = 2_500): void {
@@ -1028,11 +1322,12 @@ function shellTemplate(version: string): string {
 
     <header id="game-hud" class="game-hud" hidden>
       <div class="hud-brand"><span class="brand-glyph">✤</span><div><strong>Clockwork Conservatory</strong><small>Bloom Circuit</small></div></div>
-      <div class="hud-stats"><div><span data-i18n="level">Level</span><strong data-hud-level>1</strong></div><div><span data-i18n="score">Score</span><strong data-hud-score>0</strong></div><div class="moves-stat"><span data-i18n="moves">Moves</span><strong data-hud-moves>0</strong></div><div><span data-i18n="blooms">Blooms</span><strong data-hud-blooms>0 / 0</strong></div><div><span data-i18n="leaks">Leaks sealed</span><strong data-hud-leaks>0 / 0</strong></div></div>
+      <div class="hud-stats"><div data-stat="level"><span data-i18n="level">Level</span><strong data-hud-level>1</strong></div><div data-stat="score"><span data-i18n="score">Score</span><strong data-hud-score>0</strong></div><div class="moves-stat" data-stat="moves"><span data-i18n="moves">Moves</span><strong data-hud-moves>0</strong></div><div data-stat="blooms"><span data-i18n="blooms">Blooms</span><strong data-hud-blooms>0 / 0</strong></div><div data-stat="leaks"><span data-i18n="leaks">Leaks sealed</span><strong data-hud-leaks>0 / 0</strong></div><div class="flow-meter" data-flow-meter role="progressbar" aria-label="Bloom current" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i></i></div></div>
       <button class="round-button hud-settings" data-action="pause" aria-label="Pause">Ⅱ</button>
     </header>
 
     <aside id="objective-banner" class="objective-banner" hidden><span>✤</span><strong data-objective-text></strong></aside>
+    <div id="board-feedback" class="board-feedback" role="status" hidden></div>
     <aside id="coach-overlay" class="coach-overlay ornate-panel" hidden><div class="coach-step" data-coach-step>1 / 3</div><h2 data-coach-title></h2><p data-coach-body></p><button class="button primary compact" data-action="dismiss-coach">Try it</button></aside>
 
     <nav id="game-toolbar" class="game-toolbar ornate-panel" hidden>
@@ -1080,12 +1375,12 @@ function languageOptions(selected: SupportedLanguage): string {
 }
 function isLanguage(value: string): value is SupportedLanguage { return value === 'en' || value === 'es' || value === 'fr' || value === 'de' || value === 'it' || value === 'ru'; }
 function isQuality(value: string): value is QualityLevel { return value === 'auto' || value === 'high' || value === 'balanced'; }
-function resolveQuality(value: QualityLevel): 'high' | 'balanced' {
-  if (value !== 'auto') return value;
-  const memory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8;
-  const cores = navigator.hardwareConcurrency || 8;
-  const pixels = window.innerWidth * window.innerHeight * Math.min(2, window.devicePixelRatio || 1);
-  return memory < 4 || cores < 4 || pixels > 4_500_000 ? 'balanced' : 'high';
+function cloneProgress(progress: PersistedProgress): PersistedProgress {
+  if (typeof structuredClone === 'function') return structuredClone(progress);
+  return JSON.parse(JSON.stringify(progress)) as PersistedProgress;
+}
+async function withTimeout<T>(promise: Promise<T>, milliseconds: number, fallback: T): Promise<T> {
+  return Promise.race([promise, delay(milliseconds).then(() => fallback)]);
 }
 function initialSelection(puzzle: PuzzleDefinition): string {
   if (puzzle.tutorial) return puzzle.tutorial.targetId;

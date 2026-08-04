@@ -18,3 +18,44 @@ jobs:
           node-version: 22
       - run: npm install
       - run: npm run ci
+
+  browser:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+      - run: npm install
+      - run: pip install -r requirements-dev.txt
+      - run: python -m playwright install --with-deps chromium firefox webkit
+      - name: Chromium responsive smoke
+        run: npm run smoke
+        env:
+          PLAYWRIGHT_BROWSER: chromium
+      - name: Firefox compatibility smoke
+        run: npm run smoke
+        env:
+          PLAYWRIGHT_BROWSER: firefox
+      - name: WebKit compatibility smoke
+        run: npm run smoke
+        env:
+          PLAYWRIGHT_BROWSER: webkit
+      - name: Adaptive performance guardrails
+        run: npm run perf
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-evidence
+          path: |
+            artifacts/screenshots
+            artifacts/screenshots-firefox
+            artifacts/screenshots-webkit
+            artifacts/performance-report.json
+          if-no-files-found: ignore

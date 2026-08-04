@@ -1,6 +1,6 @@
 {
   "name": "clockwork-conservatory",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "description": "Premium Arkadium-ready botanical circuit puzzle.",
@@ -11,7 +11,9 @@
     "check": "node scripts/check.mjs",
     "test": "node scripts/test.mjs",
     "smoke": "python3 scripts/smoke_browser.py",
-    "ci": "npm run check && npm run test && npm run build"
+    "ci": "npm run check && npm run test && npm run build",
+    "perf": "python3 scripts/performance_browser.py",
+    "release": "npm run ci && npm run smoke && npm run perf"
   },
   "devDependencies": {
     "typescript": "5.8.3"

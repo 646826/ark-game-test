@@ -1,0 +1,247 @@
+{
+  "name": "Clockwork Conservatory browser performance guardrails",
+  "generatedAt": "2026-08-04T14:40:07Z",
+  "pass": true,
+  "scenarios": [
+    {
+      "label": "menu-sleep",
+      "measurementMs": 1000,
+      "renderedFrames": 0,
+      "skippedFrameDelta": 0,
+      "diagnostics": {
+        "quality": "high",
+        "adaptive": true,
+        "effectiveDpr": 2,
+        "canvasPixels": 1316640,
+        "renderedFrames": 2,
+        "skippedFrames": 0,
+        "lastDrawCostMs": 0.4,
+        "averageDrawCostMs": 0.65,
+        "activeFps": 60,
+        "ambientFps": 24,
+        "particleCount": 0,
+        "pendingBurstCount": 0,
+        "powerTransitionCount": 0,
+        "impactCount": 0,
+        "sleeping": true
+      }
+    },
+    {
+      "label": "constrained-mobile",
+      "requestedSignals": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "devicePixelRatio": 2,
+        "deviceMemory": 4,
+        "hardwareConcurrency": 4,
+        "cpuThrottle": 2
+      },
+      "diagnostics": {
+        "version": "1.1.0",
+        "screen": "playing",
+        "quality": "balanced",
+        "puzzle": {
+          "mode": "campaign",
+          "level": 12,
+          "tiles": 12
+        },
+        "renderer": {
+          "quality": "balanced",
+          "adaptive": true,
+          "effectiveDpr": 1.5,
+          "canvasPixels": 740610,
+          "renderedFrames": 96,
+          "skippedFrames": 2,
+          "lastDrawCostMs": 1.7,
+          "averageDrawCostMs": 2.144,
+          "activeFps": 30,
+          "ambientFps": 12,
+          "particleCount": 0,
+          "pendingBurstCount": 0,
+          "powerTransitionCount": 0,
+          "impactCount": 0,
+          "sleeping": false
+        }
+      },
+      "renderedFramesDuringSample": 35,
+      "effectiveRenderedFps": 23.31,
+      "sampleSeconds": 1.502,
+      "domNodes": 294,
+      "heapUsed": 5120233,
+      "viewport": {
+        "width": 390,
+        "height": 844,
+        "dpr": 2
+      },
+      "canvas": {
+        "width": 585,
+        "height": 1266
+      },
+      "qualityMode": "auto",
+      "overflowX": 0,
+      "interactionToRenderMs": 37.8
+    },
+    {
+      "label": "strong-mobile",
+      "requestedSignals": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "devicePixelRatio": 2,
+        "deviceMemory": 8,
+        "hardwareConcurrency": 8,
+        "cpuThrottle": 1
+      },
+      "diagnostics": {
+        "version": "1.1.0",
+        "screen": "playing",
+        "quality": "high",
+        "puzzle": {
+          "mode": "campaign",
+          "level": 12,
+          "tiles": 12
+        },
+        "renderer": {
+          "quality": "high",
+          "adaptive": true,
+          "effectiveDpr": 2,
+          "canvasPixels": 1316640,
+          "renderedFrames": 142,
+          "skippedFrames": 2,
+          "lastDrawCostMs": 1.2,
+          "averageDrawCostMs": 1.533,
+          "activeFps": 60,
+          "ambientFps": 24,
+          "particleCount": 0,
+          "pendingBurstCount": 0,
+          "powerTransitionCount": 0,
+          "impactCount": 0,
+          "sleeping": false
+        }
+      },
+      "renderedFramesDuringSample": 45,
+      "effectiveRenderedFps": 29.91,
+      "sampleSeconds": 1.504,
+      "domNodes": 294,
+      "heapUsed": 3754666,
+      "viewport": {
+        "width": 390,
+        "height": 844,
+        "dpr": 2
+      },
+      "canvas": {
+        "width": 780,
+        "height": 1688
+      },
+      "qualityMode": "auto",
+      "overflowX": 0,
+      "interactionToRenderMs": 3.7
+    },
+    {
+      "label": "desktop",
+      "requestedSignals": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "devicePixelRatio": 1,
+        "deviceMemory": 8,
+        "hardwareConcurrency": 8,
+        "cpuThrottle": 1
+      },
+      "diagnostics": {
+        "version": "1.1.0",
+        "screen": "playing",
+        "quality": "high",
+        "puzzle": {
+          "mode": "campaign",
+          "level": 12,
+          "tiles": 12
+        },
+        "renderer": {
+          "quality": "high",
+          "adaptive": true,
+          "effectiveDpr": 1,
+          "canvasPixels": 1296000,
+          "renderedFrames": 97,
+          "skippedFrames": 3,
+          "lastDrawCostMs": 1.2,
+          "averageDrawCostMs": 1.642,
+          "activeFps": 60,
+          "ambientFps": 24,
+          "particleCount": 0,
+          "pendingBurstCount": 0,
+          "powerTransitionCount": 0,
+          "impactCount": 0,
+          "sleeping": false
+        }
+      },
+      "renderedFramesDuringSample": 27,
+      "effectiveRenderedFps": 17.98,
+      "sampleSeconds": 1.501,
+      "domNodes": 294,
+      "heapUsed": 3897026,
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "dpr": 1
+      },
+      "canvas": {
+        "width": 1440,
+        "height": 900
+      },
+      "qualityMode": "auto",
+      "overflowX": 0,
+      "interactionToRenderMs": 3.9
+    },
+    {
+      "label": "stability-stress",
+      "cycles": 72,
+      "before": {
+        "heap": 4300975,
+        "nodes": 294,
+        "puzzle": {
+          "mode": "campaign",
+          "level": 36,
+          "tiles": 25
+        }
+      },
+      "after": {
+        "heap": 3992507,
+        "nodes": 294,
+        "overflowX": 0,
+        "screen": "playing",
+        "diagnostics": {
+          "version": "1.1.0",
+          "screen": "playing",
+          "quality": "balanced",
+          "puzzle": {
+            "mode": "campaign",
+            "level": 36,
+            "tiles": 25
+          },
+          "renderer": {
+            "quality": "balanced",
+            "adaptive": true,
+            "effectiveDpr": 1.5,
+            "canvasPixels": 740610,
+            "renderedFrames": 93,
+            "skippedFrames": 15,
+            "lastDrawCostMs": 0.9,
+            "averageDrawCostMs": 1.08,
+            "activeFps": 30,
+            "ambientFps": 12,
+            "particleCount": 0,
+            "pendingBurstCount": 0,
+            "powerTransitionCount": 0,
+            "impactCount": 0,
+            "sleeping": false
+          }
+        }
+      }
+    }
+  ]
+}

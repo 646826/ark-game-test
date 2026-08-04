@@ -5,7 +5,7 @@ const PLANTS: readonly PlantKind[] = ['lumen-orchid', 'moonbell', 'sun-dahlia', 
 
 export function createDefaultProgress(language: SupportedLanguage = 'en'): PersistedProgress {
   return {
-    schema: 3,
+    schema: 4,
     campaignLevel: 1,
     totalScore: 0,
     totalStars: 0,
@@ -17,6 +17,7 @@ export function createDefaultProgress(language: SupportedLanguage = 'en'): Persi
       language,
       sound: true,
       music: true,
+      haptics: true,
       reducedMotion: prefersReducedMotion(),
       highContrast: false,
       quality: 'auto',
@@ -30,7 +31,7 @@ export function sanitizeProgress(value: unknown, fallbackLanguage: SupportedLang
   const settings = isRecord(value.settings) ? value.settings : {};
   const specimens = Array.isArray(value.specimens) ? value.specimens.filter(isPlantKind) : fallback.specimens;
   const progress: PersistedProgress = {
-    schema: 3,
+    schema: 4,
     campaignLevel: positiveInteger(value.campaignLevel, 1),
     totalScore: nonNegativeNumber(value.totalScore, 0),
     totalStars: nonNegativeNumber(value.totalStars, 0),
@@ -42,6 +43,7 @@ export function sanitizeProgress(value: unknown, fallbackLanguage: SupportedLang
       language: isLanguage(settings.language) ? settings.language : fallbackLanguage,
       sound: typeof settings.sound === 'boolean' ? settings.sound : true,
       music: typeof settings.music === 'boolean' ? settings.music : true,
+      haptics: typeof settings.haptics === 'boolean' ? settings.haptics : true,
       reducedMotion: typeof settings.reducedMotion === 'boolean' ? settings.reducedMotion : prefersReducedMotion(),
       highContrast: typeof settings.highContrast === 'boolean' ? settings.highContrast : false,
       quality: isQuality(settings.quality) ? settings.quality : normalizeLegacyQuality(settings.quality),

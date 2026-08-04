@@ -8,7 +8,7 @@ const en = {
   menu: 'Menu', level: 'Level', score: 'Score', moves: 'Moves', blooms: 'Blooms', leaks: 'Leaks sealed',
   glasshouseRestored: 'Glasshouse Restored', nextLevel: 'Next level', replay: 'Replay', returnMenu: 'Return to menu',
   newSpecimen: 'New specimen unlocked', settings: 'Settings', help: 'How to play', resume: 'Resume',
-  sound: 'Sound effects', music: 'Ambient music', reducedMotion: 'Reduce motion', highContrast: 'High contrast',
+  sound: 'Sound effects', music: 'Ambient music', haptics: 'Touch feedback', reducedMotion: 'Reduce motion', highContrast: 'High contrast',
   quality: 'Visual quality', language: 'Language', close: 'Close', pauseTitle: 'The glasshouse is paused',
   noHint: 'The circuit is already aligned.', adUnavailable: 'A rewarded hint is not available right now.',
   fixed: 'This mechanism is anchored.', undoEmpty: 'There is nothing to undo.',
@@ -26,6 +26,7 @@ const en = {
   objectiveLeak: '{blooms} blooms awake · {leaks} active {leakWord}', objectiveClear: '{blooms} blooms awake · no active leaks',
   newRecord: 'New record', leaderboardUpdated: 'Leaderboard updated', masterwork: 'Masterwork circuit',
   current: 'Current', locked: 'Locked', complete: 'Complete',
+  bloomAwakened: 'Bloom awakened', leakSealed: 'Leak sealed', qualityAdjusted: 'Visual quality adjusted for smooth play',
 } as const;
 
 export type TranslationKey = keyof typeof en;
@@ -78,7 +79,7 @@ const translations: Record<SupportedLanguage, TranslationTable> = {
     menu: 'Меню', level: 'Уровень', score: 'Очки', moves: 'Ходы', blooms: 'Цветы', leaks: 'Утечки закрыты',
     glasshouseRestored: 'Оранжерея восстановлена', nextLevel: 'Следующий уровень', replay: 'Повторить',
     returnMenu: 'Вернуться в меню', newSpecimen: 'Открыто новое растение', settings: 'Настройки', help: 'Как играть',
-    resume: 'Продолжить', sound: 'Звуковые эффекты', music: 'Фоновая музыка', reducedMotion: 'Меньше анимации',
+    resume: 'Продолжить', sound: 'Звуковые эффекты', music: 'Фоновая музыка', haptics: 'Отклик при касании', reducedMotion: 'Меньше анимации',
     highContrast: 'Высокий контраст', quality: 'Качество графики', language: 'Язык', close: 'Закрыть',
     pauseTitle: 'Игра приостановлена', noHint: 'Механизм уже выровнен.',
     adUnavailable: 'Рекламная подсказка сейчас недоступна.', fixed: 'Этот механизм закреплён.',
@@ -95,6 +96,7 @@ const translations: Record<SupportedLanguage, TranslationTable> = {
     zenSub: 'Бесконечный сад без таймера.', tagline: 'Соедините поток. Разбудите каждый цветок.',
     objectiveLeak: 'Цветы: {blooms} · активных утечек: {leaks}', objectiveClear: 'Все {blooms} цветка получают энергию · утечек нет',
     newRecord: 'Новый рекорд', leaderboardUpdated: 'Результат отправлен', masterwork: 'Идеальный контур', current: 'Текущий', locked: 'Закрыто', complete: 'Пройдено',
+    bloomAwakened: 'Цветок пробуждён', leakSealed: 'Утечка закрыта', qualityAdjusted: 'Качество адаптировано для плавной игры',
   },
 };
 

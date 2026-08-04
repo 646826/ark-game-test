@@ -11,6 +11,7 @@ const generator = await import(new URL('../dist/src/core/generator.js', import.m
 const tutorial = await import(new URL('../dist/src/core/tutorial.js', import.meta.url));
 const progress = await import(new URL('../dist/src/core/progress.js', import.meta.url));
 const scoring = await import(new URL('../dist/src/core/scoring.js', import.meta.url));
+const performance = await import(new URL('../dist/src/core/performance.js', import.meta.url));
 
 let assertions = 0;
 const assert = (condition, message) => { assertions += 1; if (!condition) throw new Error(message); };
@@ -40,9 +41,33 @@ for (const mode of ['campaign', 'daily', 'zen']) {
 }
 
 const sanitized = progress.sanitizeProgress({ campaignLevel: 9, totalScore: 100, settings: { language: 'ru', quality: 'low' }, specimens: ['lumen-orchid', 'bad'] }, 'en');
-assert(sanitized.schema === 3, 'save schema is upgraded');
+assert(sanitized.schema === 4, 'save schema is upgraded');
 assert(sanitized.settings.language === 'ru', 'supported language is preserved');
 assert(sanitized.settings.quality === 'balanced', 'legacy quality is normalized');
+assert(sanitized.settings.haptics === true, 'legacy saves enable touch feedback by default');
+
+const desktopSignals = {
+  width: 1440, height: 900, devicePixelRatio: 1, deviceMemory: 8, hardwareConcurrency: 8,
+  saveData: false, effectiveType: '4g', coarsePointer: false,
+};
+const lowMobileSignals = {
+  width: 390, height: 844, devicePixelRatio: 3, deviceMemory: 4, hardwareConcurrency: 4,
+  saveData: false, effectiveType: '4g', coarsePointer: true,
+};
+const strongMobileSignals = {
+  width: 390, height: 844, devicePixelRatio: 2, deviceMemory: 8, hardwareConcurrency: 8,
+  saveData: false, effectiveType: '4g', coarsePointer: true,
+};
+assert(performance.resolveAutoQuality(desktopSignals) === 'high', 'desktop auto quality resolves to high');
+assert(performance.resolveAutoQuality(lowMobileSignals) === 'balanced', 'constrained mobile resolves to balanced');
+assert(performance.resolveAutoQuality(strongMobileSignals) === 'high', 'strong mobile retains high quality');
+const balancedProfile = performance.resolveRenderProfile('balanced', lowMobileSignals);
+const fittedDpr = performance.fitDevicePixelRatio(390, 844, 3, balancedProfile);
+assert(fittedDpr <= 1.5, 'balanced DPR respects the profile cap');
+assert(Math.round(390 * fittedDpr) * Math.round(844 * fittedDpr) <= balancedProfile.maxCanvasPixels + 2_000, 'balanced canvas respects the pixel budget');
+assert(performance.shouldAutoDowngrade(Array.from({ length: 72 }, (_, index) => index % 3 === 0 ? 18 : 11)), 'sustained expensive frames trigger adaptive downgrade');
+assert(!performance.shouldAutoDowngrade(Array.from({ length: 72 }, () => 4)), 'smooth frames do not trigger adaptive downgrade');
+
 const score = scoring.calculateCompletion(generator.generatePuzzle({ seed: 'score', mode: 'campaign', level: 9 }), 12, 0, 40_000);
 assert(score.score > 0 && score.stars >= 1 && score.stars <= 3, 'scoring returns a valid result');
 
