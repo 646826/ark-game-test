@@ -1,0 +1,144 @@
+{
+  "name": "Clockwork Conservatory",
+  "version": "0.2.0",
+  "generatedAt": "2026-08-04T09:38:51.118Z",
+  "totalBytes": 386141,
+  "files": [
+    {
+      "path": "favicon.svg",
+      "bytes": 493
+    },
+    {
+      "path": "index.html",
+      "bytes": 1001
+    },
+    {
+      "path": "manifest.webmanifest",
+      "bytes": 426
+    },
+    {
+      "path": "src/core/board.js",
+      "bytes": 4440
+    },
+    {
+      "path": "src/core/board.js.map",
+      "bytes": 5471
+    },
+    {
+      "path": "src/core/difficulty.js",
+      "bytes": 2834
+    },
+    {
+      "path": "src/core/difficulty.js.map",
+      "bytes": 3398
+    },
+    {
+      "path": "src/core/generator.js",
+      "bytes": 9143
+    },
+    {
+      "path": "src/core/generator.js.map",
+      "bytes": 11962
+    },
+    {
+      "path": "src/core/hints.js",
+      "bytes": 2638
+    },
+    {
+      "path": "src/core/hints.js.map",
+      "bytes": 2935
+    },
+    {
+      "path": "src/core/progress.js",
+      "bytes": 5332
+    },
+    {
+      "path": "src/core/progress.js.map",
+      "bytes": 5516
+    },
+    {
+      "path": "src/core/random.js",
+      "bytes": 1610
+    },
+    {
+      "path": "src/core/random.js.map",
+      "bytes": 2184
+    },
+    {
+      "path": "src/core/scoring.js",
+      "bytes": 1075
+    },
+    {
+      "path": "src/core/scoring.js.map",
+      "bytes": 1520
+    },
+    {
+      "path": "src/core/tutorial.js",
+      "bytes": 3275
+    },
+    {
+      "path": "src/core/tutorial.js.map",
+      "bytes": 3895
+    },
+    {
+      "path": "src/core/types.js",
+      "bytes": 488
+    },
+    {
+      "path": "src/core/types.js.map",
+      "bytes": 809
+    },
+    {
+      "path": "src/game/audio.js",
+      "bytes": 3478
+    },
+    {
+      "path": "src/game/audio.js.map",
+      "bytes": 4089
+    },
+    {
+      "path": "src/game/game.js",
+      "bytes": 56254
+    },
+    {
+      "path": "src/game/game.js.map",
+      "bytes": 51935
+    },
+    {
+      "path": "src/game/renderer.js",
+      "bytes": 43735
+    },
+    {
+      "path": "src/game/renderer.js.map",
+      "bytes": 53087
+    },
+    {
+      "path": "src/main.js",
+      "bytes": 923
+    },
+    {
+      "path": "src/main.js.map",
+      "bytes": 763
+    },
+    {
+      "path": "src/platform/arkadium.js",
+      "bytes": 15455
+    },
+    {
+      "path": "src/platform/arkadium.js.map",
+      "bytes": 14819
+    },
+    {
+      "path": "src/styles.css",
+      "bytes": 26738
+    },
+    {
+      "path": "src/ui/i18n.js",
+      "bytes": 29063
+    },
+    {
+      "path": "src/ui/i18n.js.map",
+      "bytes": 15357
+    }
+  ]
+}

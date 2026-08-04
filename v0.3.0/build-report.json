@@ -1,0 +1,174 @@
+{
+  "version": "0.3.0",
+  "generatedAt": "2026-08-04T09:23:11.371Z",
+  "initialBytes": 306202,
+  "totalBytes": 643726,
+  "initialMegabytes": 0.292,
+  "totalMegabytes": 0.614,
+  "files": [
+    {
+      "path": "assets/atrium-desktop.webp",
+      "bytes": 43468
+    },
+    {
+      "path": "assets/garden-desktop.webp",
+      "bytes": 33964
+    },
+    {
+      "path": "assets/garden-portrait.webp",
+      "bytes": 13074
+    },
+    {
+      "path": "assets/map-desktop.webp",
+      "bytes": 30796
+    },
+    {
+      "path": "assets/victory-desktop.webp",
+      "bytes": 34382
+    },
+    {
+      "path": "favicon.svg",
+      "bytes": 400
+    },
+    {
+      "path": "icon-192.png",
+      "bytes": 11959
+    },
+    {
+      "path": "icon-512.png",
+      "bytes": 39323
+    },
+    {
+      "path": "index.html",
+      "bytes": 1032
+    },
+    {
+      "path": "manifest.webmanifest",
+      "bytes": 495
+    },
+    {
+      "path": "src/core/board.js",
+      "bytes": 2800
+    },
+    {
+      "path": "src/core/board.js.map",
+      "bytes": 3739
+    },
+    {
+      "path": "src/core/difficulty.js",
+      "bytes": 776
+    },
+    {
+      "path": "src/core/difficulty.js.map",
+      "bytes": 1236
+    },
+    {
+      "path": "src/core/generator.js",
+      "bytes": 8030
+    },
+    {
+      "path": "src/core/generator.js.map",
+      "bytes": 11208
+    },
+    {
+      "path": "src/core/hints.js",
+      "bytes": 1162
+    },
+    {
+      "path": "src/core/hints.js.map",
+      "bytes": 1452
+    },
+    {
+      "path": "src/core/progress.js",
+      "bytes": 4087
+    },
+    {
+      "path": "src/core/progress.js.map",
+      "bytes": 4717
+    },
+    {
+      "path": "src/core/random.js",
+      "bytes": 2758
+    },
+    {
+      "path": "src/core/random.js.map",
+      "bytes": 1968
+    },
+    {
+      "path": "src/core/scoring.js",
+      "bytes": 802
+    },
+    {
+      "path": "src/core/scoring.js.map",
+      "bytes": 1305
+    },
+    {
+      "path": "src/core/types.js",
+      "bytes": 181
+    },
+    {
+      "path": "src/core/types.js.map",
+      "bytes": 356
+    },
+    {
+      "path": "src/game/audio.js",
+      "bytes": 10525
+    },
+    {
+      "path": "src/game/audio.js.map",
+      "bytes": 7132
+    },
+    {
+      "path": "src/game/game.js",
+      "bytes": 84158
+    },
+    {
+      "path": "src/game/game.js.map",
+      "bytes": 51486
+    },
+    {
+      "path": "src/game/renderer.js",
+      "bytes": 75868
+    },
+    {
+      "path": "src/game/renderer.js.map",
+      "bytes": 65786
+    },
+    {
+      "path": "src/main.js",
+      "bytes": 883
+    },
+    {
+      "path": "src/main.js.map",
+      "bytes": 741
+    },
+    {
+      "path": "src/platform/arkadium.js",
+      "bytes": 26745
+    },
+    {
+      "path": "src/platform/arkadium.js.map",
+      "bytes": 15085
+    },
+    {
+      "path": "src/styles.css",
+      "bytes": 25844
+    },
+    {
+      "path": "src/ui/i18n.js",
+      "bytes": 9577
+    },
+    {
+      "path": "src/ui/i18n.js.map",
+      "bytes": 7547
+    },
+    {
+      "path": "src/ui/shell.js",
+      "bytes": 6611
+    },
+    {
+      "path": "src/ui/shell.js.map",
+      "bytes": 268
+    }
+  ]
+}

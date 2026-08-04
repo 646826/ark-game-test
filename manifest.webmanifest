@@ -1,0 +1,13 @@
+{
+  "name": "Clockwork Conservatory: Bloom Circuit",
+  "short_name": "Conservatory",
+  "description": "An adaptive botanical circuit puzzle for the modern web.",
+  "start_url": "./?standalone=1",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#082b31",
+  "theme_color": "#0b3c3a",
+  "icons": [
+    { "src": "./favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
