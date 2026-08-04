@@ -1,77 +1,28 @@
-import { analyzeBoard, createTileMap, rotationPeriod, rotationsToTarget, tileKey } from './board.js';
-import { solutionDistanceMap } from './generator.js';
-import { DIRECTIONS, type HintSuggestion, type PuzzleDefinition, type TileState } from './types.js';
-
-function analysisScore(puzzle: PuzzleDefinition): number {
-  const analysis = analyzeBoard(puzzle);
-  return analysis.poweredPlants * 1200 + analysis.powered.size * 22 - analysis.leaks.length * 11;
-}
+import { analyzeBoard, rotationPeriod } from './board.js';
+import type { HintSuggestion, PuzzleDefinition } from './types.js';
 
 export function suggestHint(puzzle: PuzzleDefinition): HintSuggestion | null {
-  const baselineAnalysis = analyzeBoard(puzzle);
-  if (baselineAnalysis.solved) {
-    return null;
-  }
-
-  const baselineScore = analysisScore(puzzle);
-  let best: HintSuggestion | null = null;
-
-  for (const tile of puzzle.tiles) {
-    const period = rotationPeriod(tile.baseMask);
-    if (tile.fixed || period === 1) {
-      continue;
+  const analysis = analyzeBoard(puzzle);
+  const candidates = puzzle.tiles.filter((tile) => !tile.fixed && tile.rotation !== 0 && rotationPeriod(tile.baseMask) > 1);
+  const first = candidates[0];
+  if (!first) return null;
+  let best = first;
+  let bestScore = -Infinity;
+  for (const tile of candidates) {
+    const old = tile.rotation;
+    tile.rotation = 0;
+    const next = analyzeBoard(puzzle);
+    tile.rotation = old;
+    const score = (next.poweredPlants - analysis.poweredPlants) * 20 + (analysis.leaks.length - next.leaks.length) * 4 + next.powered.size - analysis.powered.size;
+    if (score > bestScore) {
+      bestScore = score;
+      best = tile;
     }
-    const original = tile.rotation;
-    for (let rotations = 1; rotations < period; rotations += 1) {
-      tile.rotation = (original + rotations) % period;
-      const projectedScore = analysisScore(puzzle) - rotations * 3;
-      if (projectedScore > baselineScore && (!best || projectedScore > best.projectedScore)) {
-        best = {
-          tileId: tile.id,
-          rotations,
-          projectedScore,
-          reason: 'immediate-improvement',
-        };
-      }
-    }
-    tile.rotation = original;
   }
-
-  if (best) {
-    return best;
-  }
-
-  const map = createTileMap(puzzle.tiles);
-  const distances = solutionDistanceMap(puzzle);
-  const candidates = puzzle.tiles
-    .filter((tile) => !tile.fixed && rotationsToTarget(tile) > 0)
-    .map((tile) => ({
-      tile,
-      rotations: rotationsToTarget(tile),
-      frontier: frontierWeight(tile, map, baselineAnalysis.powered),
-      distance: distances.get(tile.id) ?? Number.MAX_SAFE_INTEGER,
-    }))
-    .sort((a, b) => b.frontier - a.frontier || a.distance - b.distance || a.rotations - b.rotations);
-
-  const candidate = candidates[0];
-  if (!candidate) {
-    return null;
-  }
+  const period = rotationPeriod(best.baseMask);
   return {
-    tileId: candidate.tile.id,
-    rotations: candidate.rotations,
-    projectedScore: baselineScore,
-    reason: candidate.frontier > 0 ? 'frontier-correction' : 'solution-correction',
+    tileId: best.id,
+    rotations: (period - best.rotation) % period || period,
+    reason: analysis.leaks.length > 0 ? 'Seal_Leak' : analysis.poweredPlants < analysis.totalPlants ? 'Bloom_Path' : 'Reconnect',
   };
-}
-
-function frontierWeight(tile: TileState, map: ReadonlyMap<string, TileState>, powered: ReadonlySet<string>): number {
-  let weight = powered.has(tile.id) ? 5 : 0;
-  for (const direction of DIRECTIONS) {
-    const neighbor = map.get(tileKey(tile.x + direction.dx, tile.y + direction.dy));
-    if (neighbor && powered.has(neighbor.id)) {
-      weight += 3;
-    }
-  }
-  return weight;
 }

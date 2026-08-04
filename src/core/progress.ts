@@ -1,119 +1,94 @@
-import { createDefaultSkillProfile } from './difficulty.js';
-import type { PersistedProgress, SupportedLanguage } from './types.js';
+import type { ActiveRunSnapshot, GameMode, PersistedProgress, PlantKind, SupportedLanguage } from './types.js';
 
-export const SAVE_KEY = 'clockwork-conservatory-progress-v1';
+export const SAVE_KEY = 'clockwork-conservatory-v3';
+const ALL_PLANTS: PlantKind[] = ['lumen', 'orchid', 'starbell', 'ember', 'moonfern'];
+const LANGUAGES: SupportedLanguage[] = ['en', 'es', 'fr', 'de', 'it'];
+const MODES: GameMode[] = ['campaign', 'daily', 'zen'];
 
-export function createDefaultProgress(language: SupportedLanguage): PersistedProgress {
+export function createDefaultProgress(language: SupportedLanguage = 'en'): PersistedProgress {
+  const reducedMotion = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
   return {
-    schemaVersion: 1,
+    version: 3,
     campaignLevel: 1,
     totalScore: 0,
+    totalStars: 0,
+    completedLevels: 0,
+    streak: 0,
     bestDaily: {},
-    skill: createDefaultSkillProfile(),
-    settings: {
-      sound: true,
-      reducedMotion: globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false,
-      highContrast: globalThis.matchMedia?.('(prefers-contrast: more)').matches ?? false,
-      language,
-    },
+    unlockedSpecimens: ['lumen'],
+    settings: { language, sound: true, reducedMotion, highContrast: false, quality: 'auto', tutorialHints: true },
   };
 }
 
-export function sanitizeProgress(value: unknown, fallbackLanguage: SupportedLanguage): PersistedProgress {
+export function sanitizeProgress(value: unknown, fallbackLanguage: SupportedLanguage = 'en'): PersistedProgress {
   const fallback = createDefaultProgress(fallbackLanguage);
-  if (!isRecord(value) || value.schemaVersion !== 1) {
-    return fallback;
-  }
-
-  const settings = isRecord(value.settings) ? value.settings : {};
-  const skill = isRecord(value.skill) ? value.skill : {};
-  const language = isSupportedLanguage(settings.language) ? settings.language : fallbackLanguage;
-  const result: PersistedProgress = {
-    schemaVersion: 1,
-    campaignLevel: safeInteger(value.campaignLevel, 1, 1, 10_000),
-    totalScore: safeInteger(value.totalScore, 0, 0, Number.MAX_SAFE_INTEGER),
-    bestDaily: sanitizeDailyScores(value.bestDaily),
-    skill: {
-      rating: safeNumber(skill.rating, fallback.skill.rating, 0.05, 0.98),
-      emaEfficiency: safeNumber(skill.emaEfficiency, fallback.skill.emaEfficiency, 0, 1),
-      emaSecondsPerTile: safeNumber(skill.emaSecondsPerTile, fallback.skill.emaSecondsPerTile, 0.1, 120),
-      hintRate: safeNumber(skill.hintRate, fallback.skill.hintRate, 0, 1),
-      streak: safeInteger(skill.streak, 0, 0, 100_000),
-      completed: safeInteger(skill.completed, 0, 0, 100_000),
-    },
-    settings: {
-      sound: typeof settings.sound === 'boolean' ? settings.sound : fallback.settings.sound,
-      reducedMotion:
-        typeof settings.reducedMotion === 'boolean' ? settings.reducedMotion : fallback.settings.reducedMotion,
-      highContrast: typeof settings.highContrast === 'boolean' ? settings.highContrast : fallback.settings.highContrast,
-      language,
-    },
-  };
-
-  const activeCandidate = value.activeRun;
-  if (isRecord(activeCandidate)) {
-    const configCandidate = activeCandidate.config;
-    const rotationsCandidate = activeCandidate.rotations;
-    if (isRecord(configCandidate) && Array.isArray(rotationsCandidate)) {
-      const mode =
-        activeCandidate.mode === 'daily' || activeCandidate.mode === 'zen' || activeCandidate.mode === 'campaign'
-          ? activeCandidate.mode
-          : null;
-      if (mode && typeof activeCandidate.seed === 'string') {
-        result.activeRun = {
-          mode,
-          level: safeInteger(activeCandidate.level, 1, 1, 10_000),
-          seed: activeCandidate.seed.slice(0, 120),
-          config: {
-            tier: safeInteger(configCandidate.tier, 0, 0, 20),
-            cols: safeInteger(configCandidate.cols, 5, 3, 12),
-            rows: safeInteger(configCandidate.rows, 5, 3, 12),
-            activeCells: safeInteger(configCandidate.activeCells, 18, 4, 144),
-            minPlants: safeInteger(configCandidate.minPlants, 3, 1, 30),
-            maxPlants: safeInteger(configCandidate.maxPlants, 8, 1, 30),
-            preSolvedChance: safeNumber(configCandidate.preSolvedChance, 0.25, 0, 1),
-            fixedChance: safeNumber(configCandidate.fixedChance, 0.1, 0, 1),
-          },
-          rotations: rotationsCandidate.slice(0, 144).map((rotation: unknown) => safeInteger(rotation, 0, 0, 3)),
-          moves: safeInteger(activeCandidate.moves, 0, 0, 1_000_000),
-          hintsUsed: safeInteger(activeCandidate.hintsUsed, 0, 0, 1_000_000),
-          elapsedMs: safeInteger(activeCandidate.elapsedMs, 0, 0, 604_800_000),
-          score: safeInteger(activeCandidate.score, 0, 0, Number.MAX_SAFE_INTEGER),
-        };
+  if (!isRecord(value)) return fallback;
+  const input = value as Partial<PersistedProgress>;
+  const unlocked = Array.isArray(input.unlockedSpecimens)
+    ? input.unlockedSpecimens.filter((item): item is PlantKind => ALL_PLANTS.includes(item as PlantKind))
+    : fallback.unlockedSpecimens;
+  const lastDailyDate = typeof input.lastDailyDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(input.lastDailyDate)
+    ? input.lastDailyDate
+    : undefined;
+  const activeRun = sanitizeActiveRun(input.activeRun);
+  const language = LANGUAGES.includes(input.settings?.language as SupportedLanguage)
+    ? input.settings?.language as SupportedLanguage
+    : fallbackLanguage;
+  const bestDaily: Record<string, number> = {};
+  if (isRecord(input.bestDaily)) {
+    for (const [date, score] of Object.entries(input.bestDaily)) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(date) && typeof score === 'number' && Number.isFinite(score)) {
+        bestDaily[date] = finiteInt(score, 0, 1_000_000_000, 0);
       }
     }
   }
-
-  return result;
+  return {
+    version: 3,
+    campaignLevel: finiteInt(input.campaignLevel, 1, 999, 1),
+    totalScore: finiteInt(input.totalScore, 0, 1_000_000_000, 0),
+    totalStars: finiteInt(input.totalStars, 0, 100_000, 0),
+    completedLevels: finiteInt(input.completedLevels, 0, 100_000, 0),
+    streak: finiteInt(input.streak, 0, 10_000, 0),
+    ...(lastDailyDate ? { lastDailyDate } : {}),
+    bestDaily,
+    unlockedSpecimens: unlocked.length > 0 ? [...new Set(unlocked)] : ['lumen'],
+    settings: {
+      language,
+      sound: input.settings?.sound !== false,
+      reducedMotion: input.settings?.reducedMotion === true,
+      highContrast: input.settings?.highContrast === true,
+      quality: ['auto', 'high', 'balanced', 'low'].includes(input.settings?.quality ?? '') ? input.settings!.quality : 'auto',
+      tutorialHints: input.settings?.tutorialHints !== false,
+    },
+    ...(activeRun ? { activeRun } : {}),
+  };
 }
 
-export function serializedSize(progress: PersistedProgress): number {
-  return new TextEncoder().encode(JSON.stringify(progress)).byteLength;
+export function specimenForLevel(level: number): PlantKind | null {
+  const unlockAt: Record<number, PlantKind> = { 3: 'orchid', 7: 'starbell', 12: 'ember', 20: 'moonfern' };
+  return unlockAt[level] ?? null;
 }
 
-function sanitizeDailyScores(value: unknown): Record<string, number> {
-  if (!isRecord(value)) {
-    return {};
-  }
-  const entries = Object.entries(value)
-    .filter(([key, score]) => /^\d{4}-\d{2}-\d{2}$/.test(key) && typeof score === 'number' && Number.isFinite(score))
-    .slice(-90)
-    .map(([key, score]) => [key, Math.max(0, Math.round(score as number))] as const);
-  return Object.fromEntries(entries);
+function sanitizeActiveRun(value: unknown): ActiveRunSnapshot | undefined {
+  if (!isRecord(value)) return undefined;
+  if (typeof value.seed !== 'string' || value.seed.length === 0 || value.seed.length > 240) return undefined;
+  if (typeof value.mode !== 'string' || !MODES.includes(value.mode as GameMode)) return undefined;
+  if (!Array.isArray(value.rotations) || value.rotations.length === 0 || value.rotations.length > 64) return undefined;
+  const rotations = value.rotations.map((rotation) => finiteInt(rotation, 0, 3, 0));
+  return {
+    seed: value.seed,
+    mode: value.mode as GameMode,
+    level: finiteInt(value.level, 1, 999, 1),
+    rotations,
+    moves: finiteInt(value.moves, 0, 1_000_000, 0),
+    elapsedMs: finiteInt(value.elapsedMs, 0, 7 * 24 * 60 * 60 * 1000, 0),
+  };
+}
+
+function finiteInt(value: unknown, min: number, max: number, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.min(max, Math.max(min, Math.floor(value))) : fallback;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function safeNumber(value: unknown, fallback: number, min: number, max: number): number {
-  return typeof value === 'number' && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
-}
-
-function safeInteger(value: unknown, fallback: number, min: number, max: number): number {
-  return Math.round(safeNumber(value, fallback, min, max));
-}
-
-function isSupportedLanguage(value: unknown): value is SupportedLanguage {
-  return value === 'en' || value === 'es' || value === 'fr' || value === 'de' || value === 'it';
+  return typeof value === 'object' && value !== null;
 }

@@ -1,8 +1,8 @@
-name: Quality gate
+name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
 
 permissions:
@@ -11,11 +11,31 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-      - run: npm install
-      - run: npm run ci
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install TypeScript
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install browser test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements-dev.txt
+          python -m playwright install --with-deps chromium
+      - name: Verify source and production build
+        run: npm run ci
+      - name: Run responsive and Arkadium lifecycle smoke tests
+        run: npm run smoke
+      - name: Upload release evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clockwork-conservatory-ci-${{ github.sha }}
+          if-no-files-found: warn
+          path: |
+            dist/build-report.json
+            artifacts/smoke-*.png

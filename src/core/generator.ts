@@ -1,278 +1,196 @@
-import { analyzeBoard, canonicalizeMask, directionFromDelta, oppositeDirection, rotationPeriod, rotationsToTarget, tileKey } from './board.js';
-import { SeededRandom } from './random.js';
-import {
-  type DifficultyConfig,
-  type GameMode,
-  type PlantKind,
-  type PuzzleDefinition,
-  type TileState,
-} from './types.js';
+import { DELTA, OPPOSITE, rotationPeriod } from './board.js';
+import { difficultyFor } from './difficulty.js';
+import { Random } from './random.js';
+import { DIRECTIONS, EAST, NORTH, SOUTH, WEST, type DirectionBit, type GameMode, type PlantKind, type PuzzleDefinition, type TileState } from './types.js';
 
-const GENERATOR_VERSION = 1;
-const PLANTS: readonly PlantKind[] = ['aster', 'orchid', 'lotus', 'fern', 'rose'];
+const PLANTS: readonly PlantKind[] = ['lumen', 'orchid', 'starbell', 'ember', 'moonfern'];
 
-interface TreeNode {
-  readonly x: number;
-  readonly y: number;
-  readonly neighbors: Set<string>;
-}
-
-interface GenerateOptions {
-  readonly seed: string;
-  readonly mode: GameMode;
-  readonly level: number;
-  readonly config: DifficultyConfig;
-}
+interface Cell { x: number; y: number; }
 
 export function dailySeed(date = new Date()): string {
-  const year = date.getUTCFullYear();
-  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(date.getUTCDate()).padStart(2, '0');
-  return `daily:${year}-${month}-${day}`;
+  return `daily:${date.toISOString().slice(0, 10)}`;
 }
 
-export function generatePuzzle(options: GenerateOptions): PuzzleDefinition {
-  for (let attempt = 0; attempt < 180; attempt += 1) {
-    const random = new SeededRandom(`${options.seed}|${options.config.tier}|${attempt}`);
-    const tree = growTree(options.config, random);
-    const leaves = [...tree.values()].filter((node) => node.neighbors.size === 1);
-    const source = chooseSource(tree, leaves, options.config, random);
-    const plantCandidates = leaves.filter((node) => tileKey(node.x, node.y) !== tileKey(source.x, source.y));
+export function generatePuzzle(options: { seed: string; mode: GameMode; level: number }): PuzzleDefinition {
+  if (options.mode === 'campaign' && options.level <= 3) return tutorialPuzzle(options.level as 1 | 2 | 3);
+  const config = difficultyFor(options.level, options.mode);
+  const rng = new Random(options.seed);
+  const all: Cell[] = [];
+  for (let y = 0; y < config.height; y += 1) {
+    for (let x = 0; x < config.width; x += 1) all.push({ x, y });
+  }
 
-    if (plantCandidates.length < options.config.minPlants) {
-      continue;
-    }
+  const active = new Map(all.map((cell) => [`${cell.x},${cell.y}`, cell]));
+  // Remove only cells whose deletion keeps the remaining grid connected.
+  for (const candidate of rng.shuffle([...all])) {
+    if (active.size <= Math.max(8, config.width * config.height - config.holes)) break;
+    if (candidate.x === Math.floor(config.width / 2) && candidate.y === 0) continue;
+    active.delete(`${candidate.x},${candidate.y}`);
+    if (!isConnected(active)) active.set(`${candidate.x},${candidate.y}`, candidate);
+  }
 
-    const plantCount = Math.min(
-      plantCandidates.length,
-      random.int(options.config.minPlants, Math.min(options.config.maxPlants, plantCandidates.length)),
-    );
-    const plantKeys = new Set(
-      random.shuffle(plantCandidates).slice(0, plantCount).map((node) => tileKey(node.x, node.y)),
-    );
-    const tiles = [...tree.values()].map((node) => createTile(node, source, plantKeys, options.config, random));
-    const sourceId = idFor(source.x, source.y);
-    const definition: PuzzleDefinition = {
-      seed: options.seed,
-      mode: options.mode,
-      level: options.level,
-      config: options.config,
-      tiles,
-      sourceId,
-      optimalMoves: tiles.reduce((sum, tile) => sum + rotationsToTarget(tile), 0),
-      generatedAtVersion: GENERATOR_VERSION,
+  const cells = [...active.values()];
+  const source = cells.reduce((best, cell) => {
+    const score = Math.abs(cell.x - (config.width - 1) / 2) + cell.y * 0.35;
+    const bestScore = Math.abs(best.x - (config.width - 1) / 2) + best.y * 0.35;
+    return score < bestScore ? cell : best;
+  }, cells[0] as Cell);
+
+  const treeEdges = randomizedTree(active, source, rng);
+  const masks = new Map<string, number>(cells.map((cell) => [`${cell.x},${cell.y}`, 0]));
+  for (const [a, b, direction] of treeEdges) {
+    masks.set(key(a), (masks.get(key(a)) ?? 0) | direction);
+    masks.set(key(b), (masks.get(key(b)) ?? 0) | OPPOSITE[direction]);
+  }
+
+  let leaves = cells.filter((cell) => bitCount(masks.get(key(cell)) ?? 0) === 1 && key(cell) !== key(source));
+  if (leaves.length < 2) leaves = cells.filter((cell) => key(cell) !== key(source)).slice(-2);
+  const desiredPlants = Math.min(leaves.length, Math.max(2, Math.round(Math.sqrt(cells.length))));
+  const selectedPlants = new Set(rng.shuffle([...leaves]).slice(0, desiredPlants).map(key));
+
+  const tiles: TileState[] = cells.map((cell, index) => {
+    const baseMask = masks.get(key(cell)) ?? 0;
+    const sourceCell = key(cell) === key(source);
+    const plant = selectedPlants.has(key(cell));
+    const period = rotationPeriod(baseMask);
+    const fixed = sourceCell || (!plant && rng.next() < config.fixedRatio);
+    let rotation = fixed || period === 1 ? 0 : rng.int(0, period - 1);
+    if (!fixed && rotation === 0 && rng.next() < 0.72) rotation = 1 % period;
+    return {
+      id: `tile-${index}-${cell.x}-${cell.y}`,
+      x: cell.x,
+      y: cell.y,
+      baseMask,
+      kind: sourceCell ? 'source' : plant ? 'plant' : 'gear',
+      plantKind: plant ? PLANTS[(index + options.level) % PLANTS.length] : undefined,
+      fixed,
+      rotation,
+      visualTurns: rotation,
     };
-
-    if (definition.optimalMoves <= 0 || analyzeBoard(definition).solved) {
-      scrambleAgain(definition, random);
-    }
-
-    if (definition.optimalMoves > 0 && !analyzeBoard(definition).solved) {
-      return {
-        ...definition,
-        optimalMoves: definition.tiles.reduce((sum, tile) => sum + rotationsToTarget(tile), 0),
-      };
-    }
-  }
-
-  throw new Error(`Unable to generate a valid puzzle for seed ${options.seed}.`);
-}
-
-function growTree(config: DifficultyConfig, random: SeededRandom): Map<string, TreeNode> {
-  const sourceX = Math.floor(config.cols / 2);
-  const sourceY = Math.floor(config.rows / 2);
-  const nodes = new Map<string, TreeNode>();
-  const source: TreeNode = { x: sourceX, y: sourceY, neighbors: new Set() };
-  nodes.set(tileKey(sourceX, sourceY), source);
-
-  while (nodes.size < config.activeCells) {
-    const frontier: Array<{ parent: TreeNode; x: number; y: number; weight: number }> = [];
-    for (const parent of nodes.values()) {
-      const candidates = [
-        [parent.x, parent.y - 1],
-        [parent.x + 1, parent.y],
-        [parent.x, parent.y + 1],
-        [parent.x - 1, parent.y],
-      ] as const;
-      for (const [x, y] of candidates) {
-        if (x < 0 || y < 0 || x >= config.cols || y >= config.rows || nodes.has(tileKey(x, y))) {
-          continue;
-        }
-        const adjacentCount = countAdjacent(nodes, x, y);
-        const branchWeight = parent.neighbors.size === 1 ? 1.55 : parent.neighbors.size === 2 ? 0.95 : 0.35;
-        const opennessWeight = adjacentCount === 1 ? 1.35 : adjacentCount === 2 ? 0.8 : 0.4;
-        const edgeDistance = Math.min(x, y, config.cols - 1 - x, config.rows - 1 - y);
-        frontier.push({ parent, x, y, weight: branchWeight * opennessWeight * (1 + edgeDistance * 0.06) });
-      }
-    }
-
-    if (frontier.length === 0) {
-      break;
-    }
-
-    const chosen = weightedPick(frontier, random);
-    const child: TreeNode = { x: chosen.x, y: chosen.y, neighbors: new Set() };
-    const parentKey = tileKey(chosen.parent.x, chosen.parent.y);
-    const childKey = tileKey(child.x, child.y);
-    child.neighbors.add(parentKey);
-    chosen.parent.neighbors.add(childKey);
-    nodes.set(childKey, child);
-  }
-
-  return nodes;
-}
-
-function countAdjacent(nodes: ReadonlyMap<string, TreeNode>, x: number, y: number): number {
-  let count = 0;
-  for (const [dx, dy] of [[0, -1], [1, 0], [0, 1], [-1, 0]] as const) {
-    if (nodes.has(tileKey(x + dx, y + dy))) {
-      count += 1;
-    }
-  }
-  return count;
-}
-
-function weightedPick<T extends { readonly weight: number }>(items: readonly T[], random: SeededRandom): T {
-  const total = items.reduce((sum, item) => sum + item.weight, 0);
-  let cursor = random.next() * total;
-  for (const item of items) {
-    cursor -= item.weight;
-    if (cursor <= 0) {
-      return item;
-    }
-  }
-  return items[items.length - 1] as T;
-}
-
-function chooseSource(
-  tree: ReadonlyMap<string, TreeNode>,
-  leaves: readonly TreeNode[],
-  config: DifficultyConfig,
-  random: SeededRandom,
-): TreeNode {
-  const centerX = (config.cols - 1) / 2;
-  const centerY = (config.rows - 1) / 2;
-  const leafKeys = new Set(leaves.map((leaf) => tileKey(leaf.x, leaf.y)));
-  const candidates = [...tree.values()]
-    .filter((node) => !leafKeys.has(tileKey(node.x, node.y)) && node.neighbors.size >= 2)
-    .sort((a, b) => {
-      const distanceA = Math.hypot(a.x - centerX, a.y - centerY);
-      const distanceB = Math.hypot(b.x - centerX, b.y - centerY);
-      return distanceA - distanceB;
-    });
-  const shortlist = candidates.slice(0, Math.min(5, candidates.length));
-  return shortlist.length > 0 ? random.pick(shortlist) : ([...tree.values()][0] as TreeNode);
-}
-
-function createTile(
-  node: TreeNode,
-  source: TreeNode,
-  plantKeys: ReadonlySet<string>,
-  config: DifficultyConfig,
-  random: SeededRandom,
-): TileState {
-  let solutionMask = 0;
-  for (const neighborKey of node.neighbors) {
-    const [neighborX, neighborY] = neighborKey.split(':').map(Number) as [number, number];
-    solutionMask |= directionFromDelta(neighborX - node.x, neighborY - node.y);
-  }
-
-  const { baseMask, targetRotation } = canonicalizeMask(solutionMask);
-  const key = tileKey(node.x, node.y);
-  const isSource = node.x === source.x && node.y === source.y;
-  const isPlant = plantKeys.has(key);
-  const period = rotationPeriod(baseMask);
-  const fixed = isSource || period === 1 || random.bool(config.fixedChance);
-  let rotation = targetRotation;
-
-  if (!fixed && !random.bool(config.preSolvedChance)) {
-    rotation = (targetRotation + random.int(1, period - 1)) % period;
-  }
-
-  const common = {
-    id: idFor(node.x, node.y),
-    x: node.x,
-    y: node.y,
-    kind: isSource ? 'source' : isPlant ? 'plant' : 'path',
-    baseMask,
-    solutionMask,
-    targetRotation,
-    fixed,
-    rotation,
-    visualTurns: rotation,
-  } as const;
-
-  if (isPlant) {
-    return { ...common, kind: 'plant', plantKind: random.pick(PLANTS) };
-  }
-  return common;
-}
-
-function scrambleAgain(puzzle: PuzzleDefinition, random: SeededRandom): void {
-  for (let pass = 0; pass < 24; pass += 1) {
-    for (const tile of puzzle.tiles) {
-      const period = rotationPeriod(tile.baseMask);
-      if (tile.fixed || period === 1) {
-        tile.rotation = tile.targetRotation;
-      } else {
-        tile.rotation = (tile.targetRotation + random.int(0, period - 1)) % period;
-      }
-      tile.visualTurns = tile.rotation;
-    }
-    if (!analyzeBoard(puzzle).solved && puzzle.tiles.some((tile) => rotationsToTarget(tile) > 0)) {
-      return;
-    }
-  }
-}
-
-function idFor(x: number, y: number): string {
-  return `tile-${x}-${y}`;
-}
-
-export function applySolution(puzzle: PuzzleDefinition): void {
-  for (const tile of puzzle.tiles) {
-    tile.rotation = tile.targetRotation;
-    tile.visualTurns = tile.targetRotation;
-  }
-}
-
-export function validateSolutionTopology(puzzle: PuzzleDefinition): boolean {
-  const original = puzzle.tiles.map((tile) => tile.rotation);
-  for (const tile of puzzle.tiles) {
-    tile.rotation = tile.targetRotation;
-  }
-  const valid = analyzeBoard(puzzle).solved;
-  puzzle.tiles.forEach((tile, index) => {
-    tile.rotation = original[index] as number;
   });
-  return valid;
-}
 
-export function solutionDistanceMap(puzzle: PuzzleDefinition): Map<string, number> {
-  const byCoordinate = new Map(puzzle.tiles.map((tile) => [tileKey(tile.x, tile.y), tile]));
-  const byId = new Map(puzzle.tiles.map((tile) => [tile.id, tile]));
-  const source = byId.get(puzzle.sourceId);
-  const distances = new Map<string, number>();
-  if (!source) {
-    return distances;
-  }
-  distances.set(source.id, 0);
-  const queue = [source];
-  while (queue.length > 0) {
-    const tile = queue.shift() as TileState;
-    const distance = distances.get(tile.id) as number;
-    for (const [dx, dy] of [[0, -1], [1, 0], [0, 1], [-1, 0]] as const) {
-      const direction = directionFromDelta(dx, dy);
-      if ((tile.solutionMask & direction) === 0) {
-        continue;
-      }
-      const neighbor = byCoordinate.get(tileKey(tile.x + dx, tile.y + dy));
-      if (!neighbor || (neighbor.solutionMask & oppositeDirection(direction)) === 0 || distances.has(neighbor.id)) {
-        continue;
-      }
-      distances.set(neighbor.id, distance + 1);
-      queue.push(neighbor);
+  const parMoves = tiles.reduce((sum, tile) => {
+    const period = rotationPeriod(tile.baseMask);
+    return sum + (tile.fixed ? 0 : (period - tile.rotation) % period);
+  }, 0);
+
+  // Guarantee that the starting board is not already solved.
+  if (parMoves === 0) {
+    const candidate = tiles.find((tile) => !tile.fixed && rotationPeriod(tile.baseMask) > 1);
+    if (candidate) {
+      candidate.rotation = 1;
+      candidate.visualTurns = 1;
     }
   }
-  return distances;
+
+  return {
+    seed: options.seed,
+    mode: options.mode,
+    level: options.level,
+    width: config.width,
+    height: config.height,
+    tiles,
+    sourceId: tiles.find((tile) => tile.kind === 'source')?.id ?? tiles[0]?.id ?? '',
+    config,
+    parMoves: Math.max(1, tiles.reduce((sum, tile) => {
+      const period = rotationPeriod(tile.baseMask);
+      return sum + (tile.fixed ? 0 : (period - tile.rotation) % period);
+    }, 0)),
+  };
+}
+
+function randomizedTree(active: Map<string, Cell>, start: Cell, rng: Random): Array<[Cell, Cell, DirectionBit]> {
+  const visited = new Set<string>([key(start)]);
+  const edges: Array<[Cell, Cell, DirectionBit]> = [];
+  const frontier: Array<[Cell, Cell, DirectionBit]> = neighbors(start, active).map(([cell, direction]) => [start, cell, direction]);
+  while (frontier.length > 0) {
+    const index = rng.int(0, frontier.length - 1);
+    const [from, to, direction] = frontier.splice(index, 1)[0] as [Cell, Cell, DirectionBit];
+    if (visited.has(key(to))) continue;
+    visited.add(key(to));
+    edges.push([from, to, direction]);
+    for (const [next, nextDirection] of neighbors(to, active)) {
+      if (!visited.has(key(next))) frontier.push([to, next, nextDirection]);
+    }
+  }
+  return edges;
+}
+
+function neighbors(cell: Cell, active: Map<string, Cell>): Array<[Cell, DirectionBit]> {
+  const result: Array<[Cell, DirectionBit]> = [];
+  for (const direction of DIRECTIONS) {
+    const [dx, dy] = DELTA[direction];
+    const neighbor = active.get(`${cell.x + dx},${cell.y + dy}`);
+    if (neighbor) result.push([neighbor, direction]);
+  }
+  return result;
+}
+
+function isConnected(active: Map<string, Cell>): boolean {
+  const first = active.values().next().value as Cell | undefined;
+  if (!first) return false;
+  const seen = new Set<string>([key(first)]);
+  const queue = [first];
+  while (queue.length > 0) {
+    const current = queue.shift() as Cell;
+    for (const [neighbor] of neighbors(current, active)) {
+      if (!seen.has(key(neighbor))) {
+        seen.add(key(neighbor));
+        queue.push(neighbor);
+      }
+    }
+  }
+  return seen.size === active.size;
+}
+
+function key(cell: Cell): string { return `${cell.x},${cell.y}`; }
+function bitCount(mask: number): number { let value = mask; let count = 0; while (value) { count += value & 1; value >>>= 1; } return count; }
+
+export function tutorialPuzzle(level: 1 | 2 | 3): PuzzleDefinition {
+  const config = difficultyFor(level, 'campaign');
+  const definitions: Record<1 | 2 | 3, Array<{ x: number; y: number; mask: number; kind: 'source' | 'gear' | 'plant'; rotation?: number; fixed?: boolean; plant?: PlantKind }>> = {
+    1: [
+      { x: 0, y: 1, mask: EAST, kind: 'source', fixed: true },
+      { x: 1, y: 1, mask: EAST | WEST, kind: 'gear', rotation: 1 },
+      { x: 2, y: 1, mask: WEST, kind: 'plant', fixed: true, plant: 'lumen' },
+    ],
+    2: [
+      { x: 1, y: 0, mask: SOUTH, kind: 'source', fixed: true },
+      { x: 1, y: 1, mask: NORTH | EAST | WEST, kind: 'gear', rotation: 3 },
+      { x: 0, y: 1, mask: EAST, kind: 'plant', fixed: true, plant: 'orchid' },
+      { x: 2, y: 1, mask: WEST, kind: 'plant', fixed: true, plant: 'starbell' },
+    ],
+    3: [
+      { x: 0, y: 0, mask: EAST, kind: 'source', fixed: true },
+      { x: 1, y: 0, mask: EAST | WEST, kind: 'gear', fixed: true },
+      { x: 2, y: 0, mask: SOUTH | WEST, kind: 'gear', rotation: 1 },
+      { x: 2, y: 1, mask: NORTH | SOUTH, kind: 'gear' },
+      { x: 2, y: 2, mask: NORTH | WEST, kind: 'gear' },
+      { x: 1, y: 2, mask: EAST | WEST, kind: 'gear' },
+      { x: 0, y: 2, mask: EAST, kind: 'plant', fixed: true, plant: 'moonfern' },
+    ],
+  };
+  const tiles = definitions[level].map((entry, index): TileState => ({
+    id: `tutorial-${level}-${index}`,
+    x: entry.x,
+    y: entry.y,
+    baseMask: entry.mask,
+    kind: entry.kind,
+    plantKind: entry.plant,
+    fixed: entry.fixed ?? entry.kind !== 'gear',
+    rotation: entry.rotation ?? 0,
+    visualTurns: entry.rotation ?? 0,
+  }));
+  return {
+    seed: `tutorial:${level}`,
+    mode: 'campaign',
+    level,
+    width: 3,
+    height: 3,
+    tiles,
+    sourceId: tiles.find((tile) => tile.kind === 'source')?.id ?? tiles[0]?.id ?? '',
+    config,
+    parMoves: level === 1 || level === 2 ? 1 : 3,
+    tutorial: level,
+  };
 }

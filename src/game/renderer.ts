@@ -1,21 +1,30 @@
-import { currentMask } from '../core/board.js';
 import { hashSeed } from '../core/random.js';
-import { DIRECTIONS, Direction, type BoardAnalysis, type DirectionBit, type PuzzleDefinition, type TileState } from '../core/types.js';
+import {
+  DIRECTIONS,
+  EAST,
+  NORTH,
+  SOUTH,
+  WEST,
+  type BoardAnalysis,
+  type DirectionBit,
+  type PlantKind,
+  type PuzzleDefinition,
+  type QualityMode,
+  type TileState,
+} from '../core/types.js';
 
-interface Point {
-  readonly x: number;
-  readonly y: number;
-}
-
+interface Point { x: number; y: number }
 interface ProjectedTile {
   readonly tile: TileState;
   readonly center: Point;
-  readonly polygon: readonly Point[];
+  readonly polygon: readonly [Point, Point, Point, Point];
   readonly depth: number;
   readonly tileWidth: number;
   readonly tileHeight: number;
+  readonly unit: number;
+  readonly cameraAngle: number;
+  readonly verticalScale: number;
 }
-
 interface Particle {
   x: number;
   y: number;
@@ -25,79 +34,58 @@ interface Particle {
   maxLife: number;
   size: number;
   hue: number;
+  spin: number;
 }
-
-interface Pollen {
+interface Mote {
   x: number;
   y: number;
   speed: number;
+  drift: number;
   phase: number;
   size: number;
 }
+interface RenderProfile {
+  readonly dprCap: number;
+  readonly motes: number;
+  readonly pipeGlow: number;
+  readonly shadows: boolean;
+  readonly texture: boolean;
+}
+type Scene = 'menu' | 'game' | 'map' | 'victory';
+type AssetKey = 'atrium' | 'garden' | 'portrait' | 'map' | 'victory';
 
-interface Theme {
-  readonly skyTop: string;
-  readonly skyBottom: string;
-  readonly haze: string;
-  readonly floor: string;
-  readonly tile: string;
-  readonly tilePowered: string;
-  readonly metal: string;
-  readonly glow: string;
-  readonly accent: string;
+declare global {
+  interface Window {
+    __clockworkAssetUrls?: Partial<Record<'atrium' | 'garden' | 'portrait' | 'map' | 'victory', string>>;
+  }
 }
 
-const THEMES: readonly Theme[] = [
-  {
-    skyTop: '#092d33',
-    skyBottom: '#145d52',
-    haze: 'rgba(132, 238, 194, 0.22)',
-    floor: '#0c3835',
-    tile: '#264f48',
-    tilePowered: '#357568',
-    metal: '#c89b55',
-    glow: '#8ffff0',
-    accent: '#ffd98c',
-  },
-  {
-    skyTop: '#102d25',
-    skyBottom: '#3b6a3e',
-    haze: 'rgba(202, 255, 154, 0.2)',
-    floor: '#173c2c',
-    tile: '#345640',
-    tilePowered: '#567d4c',
-    metal: '#d1a85f',
-    glow: '#d7ff8a',
-    accent: '#ffe3a0',
-  },
-  {
-    skyTop: '#171c3d',
-    skyBottom: '#5b3b68',
-    haze: 'rgba(184, 160, 255, 0.19)',
-    floor: '#252447',
-    tile: '#3e405f',
-    tilePowered: '#5a5885',
-    metal: '#d3a967',
-    glow: '#bfe8ff',
-    accent: '#ffc8e7',
-  },
-  {
-    skyTop: '#08253f',
-    skyBottom: '#31536c',
-    haze: 'rgba(126, 248, 237, 0.2)',
-    floor: '#123349',
-    tile: '#334f62',
-    tilePowered: '#48798a',
-    metal: '#e0b970',
-    glow: '#94fff5',
-    accent: '#f4d4ff',
-  },
-] as const;
+const PROFILES: Record<Exclude<QualityMode, 'auto'>, RenderProfile> = {
+  high: { dprCap: 2, motes: 72, pipeGlow: 22, shadows: true, texture: true },
+  balanced: { dprCap: 1.65, motes: 40, pipeGlow: 14, shadows: true, texture: true },
+  low: { dprCap: 1.2, motes: 16, pipeGlow: 7, shadows: false, texture: false },
+};
+
+const PLANT_COLORS: Record<PlantKind, readonly [string, string, string]> = {
+  lumen: ['#d7fff5', '#73eaff', '#2a86c7'],
+  orchid: ['#ffe0ff', '#c176ff', '#6e43c5'],
+  starbell: ['#fffbd9', '#fff2a4', '#7adcc8'],
+  ember: ['#fff0aa', '#ff8d58', '#c93655'],
+  moonfern: ['#c8ffdc', '#54d7ad', '#237c7f'],
+};
+
+const DIRECTION_VECTOR: Record<DirectionBit, readonly [number, number]> = {
+  [NORTH]: [0, -1],
+  [EAST]: [1, 0],
+  [SOUTH]: [0, 1],
+  [WEST]: [-1, 0],
+};
 
 export class ConservatoryRenderer {
   readonly #canvas: HTMLCanvasElement;
   readonly #context: CanvasRenderingContext2D;
   readonly #resizeObserver: ResizeObserver;
+  readonly #assets = new Map<string, HTMLImageElement>();
   #puzzle: PuzzleDefinition | null = null;
   #analysis: BoardAnalysis | null = null;
   #selectedId: string | null = null;
@@ -117,26 +105,51 @@ export class ConservatoryRenderer {
   #running = true;
   #reducedMotion = false;
   #highContrast = false;
-  #leakWarnings = true;
-  #anchorIndicators = true;
+  #quality: QualityMode = 'auto';
+  #profile: RenderProfile = PROFILES.balanced;
   #particles: Particle[] = [];
-  #pollen: Pollen[] = [];
-  #themeIndex = 0;
+  #motes: Mote[] = [];
+  #scene: Scene = 'menu';
   #victoryStartedAt = 0;
   #victoryEndsAt = 0;
+  #boardPulse = 0;
+  #assetsReady = false;
 
   public constructor(canvas: HTMLCanvasElement) {
     this.#canvas = canvas;
-    const context = canvas.getContext('2d', { alpha: false, desynchronized: true });
-    if (!context) {
-      throw new Error('Canvas 2D is unavailable.');
-    }
+    const context = canvas.getContext('2d', { alpha: false });
+    if (!context) throw new Error('Canvas 2D is unavailable.');
     this.#context = context;
     this.#resizeObserver = new ResizeObserver(() => this.resize());
     this.#resizeObserver.observe(canvas);
-    this.#createPollen();
+    this.#resolveProfile();
+    this.#createMotes();
     this.resize();
     this.#animationFrame = requestAnimationFrame((timestamp) => this.#frame(timestamp));
+  }
+
+  public async preload(): Promise<void> {
+    // Only the title-scene art blocks first interaction. Gameplay, map and victory
+    // backdrops are streamed when their scene is requested.
+    await this.#ensureAsset('atrium');
+    this.#assetsReady = true;
+  }
+
+  async #ensureAsset(key: AssetKey): Promise<void> {
+    if (this.#assets.has(key)) return;
+    const defaults: Record<AssetKey, string> = {
+      atrium: './assets/atrium-desktop.webp',
+      garden: './assets/garden-desktop.webp',
+      portrait: './assets/garden-portrait.webp',
+      map: './assets/map-desktop.webp',
+      victory: './assets/victory-desktop.webp',
+    };
+    const source = window.__clockworkAssetUrls?.[key] ?? defaults[key];
+    try {
+      this.#assets.set(key, await loadImage(source));
+    } catch {
+      // The procedural fallback remains fully playable when an image is unavailable.
+    }
   }
 
   public destroy(): void {
@@ -145,13 +158,20 @@ export class ConservatoryRenderer {
     this.#resizeObserver.disconnect();
   }
 
+  public setScene(scene: Scene): void {
+    this.#scene = scene;
+    if (scene === 'menu') void this.#ensureAsset('atrium');
+    else if (scene === 'game') {
+      void this.#ensureAsset('garden');
+      void this.#ensureAsset('portrait');
+    } else if (scene === 'map') void this.#ensureAsset('map');
+    else void this.#ensureAsset('victory');
+  }
+
   public setPuzzle(puzzle: PuzzleDefinition): void {
     this.#puzzle = puzzle;
-    this.#themeIndex = Math.floor((Math.max(1, puzzle.level) - 1) / 5) % THEMES.length;
     this.#displayTurns.clear();
-    for (const tile of puzzle.tiles) {
-      this.#displayTurns.set(tile.id, tile.visualTurns);
-    }
+    for (const tile of puzzle.tiles) this.#displayTurns.set(tile.id, tile.visualTurns);
     this.#selectedId = puzzle.sourceId;
     this.#hoveredId = null;
     this.#hintId = null;
@@ -159,116 +179,69 @@ export class ConservatoryRenderer {
     this.#particles = [];
     this.#victoryStartedAt = 0;
     this.#victoryEndsAt = 0;
+    this.#boardPulse = 0;
   }
 
-  public setAnalysis(analysis: BoardAnalysis): void {
-    this.#analysis = analysis;
-  }
-
-  public setSelected(tileId: string | null): void {
-    this.#selectedId = tileId;
-  }
-
-  public setHovered(tileId: string | null): void {
-    this.#hoveredId = tileId;
-  }
-
-  public setCoach(tileId: string | null): void {
-    this.#coachId = tileId;
-  }
-
-  public setLeakWarnings(enabled: boolean): void {
-    this.#leakWarnings = enabled;
-  }
-
-  public setAnchorIndicators(enabled: boolean): void {
-    this.#anchorIndicators = enabled;
-  }
+  public setAnalysis(analysis: BoardAnalysis): void { this.#analysis = analysis; }
+  public setSelected(tileId: string | null): void { this.#selectedId = tileId; }
+  public setHovered(tileId: string | null): void { this.#hoveredId = tileId; }
+  public setCoach(tileId: string | null): void { this.#coachId = tileId; }
 
   public setHint(tileId: string, durationMs = 5_000): void {
     this.#hintId = tileId;
     this.#hintUntil = performance.now() + durationMs;
   }
 
-  public clearHint(): void {
-    this.#hintId = null;
-  }
-
-  public startVictorySequence(durationMs = 1_850): void {
-    const now = performance.now();
-    this.#victoryStartedAt = now;
-    this.#victoryEndsAt = now + Math.max(250, durationMs);
-    this.#selectedId = null;
-    this.#hoveredId = null;
-    this.#hintId = null;
-    this.#coachId = null;
-    this.bloomBurst();
-  }
+  public clearHint(): void { this.#hintId = null; }
 
   public setReducedMotion(enabled: boolean): void {
     this.#reducedMotion = enabled;
     if (enabled) {
       this.#viewTurns = this.#targetViewTurns;
       if (this.#puzzle) {
-        for (const tile of this.#puzzle.tiles) {
-          this.#displayTurns.set(tile.id, tile.visualTurns);
-        }
+        for (const tile of this.#puzzle.tiles) this.#displayTurns.set(tile.id, tile.visualTurns);
       }
     }
   }
 
-  public setHighContrast(enabled: boolean): void {
-    this.#highContrast = enabled;
+  public setHighContrast(enabled: boolean): void { this.#highContrast = enabled; }
+
+  public setQuality(quality: QualityMode): void {
+    this.#quality = quality;
+    this.#resolveProfile();
+    this.#createMotes();
+    this.resize();
   }
 
   public rotateView(delta: -1 | 1): void {
     this.#targetViewTurns += delta;
-    if (this.#reducedMotion) {
-      this.#viewTurns = this.#targetViewTurns;
-    }
+    if (this.#reducedMotion) this.#viewTurns = this.#targetViewTurns;
   }
 
   public syncTile(tile: TileState): void {
-    if (!this.#displayTurns.has(tile.id)) {
-      this.#displayTurns.set(tile.id, tile.visualTurns);
-    }
+    if (!this.#displayTurns.has(tile.id)) this.#displayTurns.set(tile.id, tile.visualTurns);
+    this.#boardPulse = 1;
   }
 
   public hitTest(clientX: number, clientY: number): string | null {
     const rect = this.#canvas.getBoundingClientRect();
     const point = { x: clientX - rect.left, y: clientY - rect.top };
     for (let index = this.#projectedTiles.length - 1; index >= 0; index -= 1) {
-      const projected = this.#projectedTiles[index] as ProjectedTile;
-      if (pointInPolygon(point, projected.polygon)) {
-        return projected.tile.id;
-      }
+      const projected = this.#projectedTiles[index];
+      if (projected && pointInPolygon(point, projected.polygon)) return projected.tile.id;
     }
     return null;
   }
 
-  public bloomBurst(): void {
-    if (!this.#analysis || this.#reducedMotion) {
-      return;
-    }
-    for (const projected of this.#projectedTiles) {
-      if (projected.tile.kind !== 'plant') {
-        continue;
-      }
-      for (let index = 0; index < 18; index += 1) {
-        const angle = (Math.PI * 2 * index) / 18 + Math.random() * 0.3;
-        const speed = 28 + Math.random() * 72;
-        this.#particles.push({
-          x: projected.center.x,
-          y: projected.center.y - projected.tileHeight * 0.7,
-          vx: Math.cos(angle) * speed,
-          vy: Math.sin(angle) * speed - 38,
-          life: 1,
-          maxLife: 0.9 + Math.random() * 0.8,
-          size: 2 + Math.random() * 4,
-          hue: 44 + Math.random() * 100,
-        });
-      }
-    }
+  public startVictorySequence(durationMs = 2_150): void {
+    const now = performance.now();
+    this.#victoryStartedAt = now;
+    this.#victoryEndsAt = now + Math.max(400, durationMs);
+    this.#selectedId = null;
+    this.#hoveredId = null;
+    this.#hintId = null;
+    this.#coachId = null;
+    this.#spawnBloomParticles();
   }
 
   public pause(): void {
@@ -277,9 +250,7 @@ export class ConservatoryRenderer {
   }
 
   public resume(): void {
-    if (this.#running) {
-      return;
-    }
+    if (this.#running) return;
     this.#running = true;
     this.#lastTimestamp = performance.now();
     this.#animationFrame = requestAnimationFrame((timestamp) => this.#frame(timestamp));
@@ -289,7 +260,7 @@ export class ConservatoryRenderer {
     const rect = this.#canvas.getBoundingClientRect();
     this.#width = Math.max(1, rect.width);
     this.#height = Math.max(1, rect.height);
-    this.#dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+    this.#dpr = Math.min(this.#profile.dprCap, Math.max(1, window.devicePixelRatio || 1));
     const physicalWidth = Math.round(this.#width * this.#dpr);
     const physicalHeight = Math.round(this.#height * this.#dpr);
     if (this.#canvas.width !== physicalWidth || this.#canvas.height !== physicalHeight) {
@@ -299,23 +270,41 @@ export class ConservatoryRenderer {
     this.#context.setTransform(this.#dpr, 0, 0, this.#dpr, 0, 0);
   }
 
-  #frame(timestamp: number): void {
-    if (!this.#running) {
+  #resolveProfile(): void {
+    if (this.#quality !== 'auto') {
+      this.#profile = PROFILES[this.#quality];
       return;
     }
-    const deltaSeconds = Math.min(0.05, Math.max(0, (timestamp - this.#lastTimestamp) / 1_000 || 0));
+    const memory = Number((navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 4);
+    const cores = navigator.hardwareConcurrency || 4;
+    this.#profile = memory <= 2 || cores <= 2 ? PROFILES.low : memory <= 4 || cores <= 4 ? PROFILES.balanced : PROFILES.high;
+  }
+
+  #createMotes(): void {
+    const count = this.#profile.motes;
+    this.#motes = Array.from({ length: count }, (_, index): Mote => ({
+      x: ((hashSeed(`mote-x-${index}`) % 10_000) / 10_000),
+      y: ((hashSeed(`mote-y-${index}`) % 10_000) / 10_000),
+      speed: 0.012 + ((hashSeed(`mote-speed-${index}`) % 1000) / 1000) * 0.026,
+      drift: 0.8 + ((hashSeed(`mote-drift-${index}`) % 1000) / 1000) * 2.6,
+      phase: ((hashSeed(`mote-phase-${index}`) % 6283) / 1000),
+      size: 0.7 + ((hashSeed(`mote-size-${index}`) % 1000) / 1000) * 2.1,
+    }));
+  }
+
+  #frame(timestamp: number): void {
+    if (!this.#running) return;
+    const deltaSeconds = Math.min(0.05, Math.max(0, (timestamp - this.#lastTimestamp) / 1000 || 0));
     this.#lastTimestamp = timestamp;
-    this.#update(deltaSeconds);
+    this.#update(deltaSeconds, timestamp);
     this.#draw(timestamp);
     this.#animationFrame = requestAnimationFrame((next) => this.#frame(next));
   }
 
-  #update(deltaSeconds: number): void {
-    const smoothing = this.#reducedMotion ? 1 : 1 - Math.exp(-deltaSeconds * 9.5);
+  #update(deltaSeconds: number, timestamp: number): void {
+    const smoothing = this.#reducedMotion ? 1 : 1 - Math.exp(-deltaSeconds * 9.8);
     this.#viewTurns += (this.#targetViewTurns - this.#viewTurns) * smoothing;
-    if (Math.abs(this.#targetViewTurns - this.#viewTurns) < 0.0005) {
-      this.#viewTurns = this.#targetViewTurns;
-    }
+    if (Math.abs(this.#targetViewTurns - this.#viewTurns) < 0.0005) this.#viewTurns = this.#targetViewTurns;
 
     if (this.#puzzle) {
       for (const tile of this.#puzzle.tiles) {
@@ -325,25 +314,24 @@ export class ConservatoryRenderer {
       }
     }
 
-    if (this.#hintId && performance.now() > this.#hintUntil) {
-      this.#hintId = null;
-    }
+    this.#boardPulse = Math.max(0, this.#boardPulse - deltaSeconds * 2.4);
+    if (this.#hintId && timestamp > this.#hintUntil) this.#hintId = null;
 
     if (!this.#reducedMotion) {
-      for (const pollen of this.#pollen) {
-        pollen.y -= pollen.speed * deltaSeconds;
-        pollen.x += Math.sin(performance.now() * 0.0004 + pollen.phase) * deltaSeconds * 4;
-        if (pollen.y < -0.04) {
-          pollen.y = 1.04;
-          pollen.x = Math.random();
-        }
+      for (const mote of this.#motes) {
+        mote.y -= mote.speed * deltaSeconds;
+        mote.x += Math.sin(timestamp * 0.00035 + mote.phase) * deltaSeconds * 0.004 * mote.drift;
+        if (mote.y < -0.03) { mote.y = 1.03; mote.x = (mote.x + 0.37) % 1; }
+        if (mote.x < -0.04) mote.x = 1.04;
+        if (mote.x > 1.04) mote.x = -0.04;
       }
       for (const particle of this.#particles) {
         particle.life -= deltaSeconds;
         particle.x += particle.vx * deltaSeconds;
         particle.y += particle.vy * deltaSeconds;
-        particle.vy += 34 * deltaSeconds;
-        particle.vx *= Math.pow(0.96, deltaSeconds * 60);
+        particle.vy += 31 * deltaSeconds;
+        particle.vx *= Math.pow(0.965, deltaSeconds * 60);
+        particle.spin += deltaSeconds * 3;
       }
       this.#particles = this.#particles.filter((particle) => particle.life > 0);
     }
@@ -352,811 +340,919 @@ export class ConservatoryRenderer {
   #draw(timestamp: number): void {
     const context = this.#context;
     context.setTransform(this.#dpr, 0, 0, this.#dpr, 0, 0);
-    const theme = THEMES[this.#themeIndex] as Theme;
-    this.#drawBackground(theme, timestamp);
-    this.#drawGlasshouse(theme, timestamp);
-
-    if (!this.#puzzle) {
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = 'high';
+    this.#drawBackground(timestamp);
+    if (!this.#puzzle || this.#scene === 'menu' || this.#scene === 'map') {
+      this.#projectedTiles = [];
+      this.#drawAmbientForeground(timestamp);
       return;
     }
 
-    this.#projectedTiles = this.#projectBoard(this.#puzzle);
-    this.#drawBoardShadow(theme);
-    for (const projected of this.#projectedTiles) {
-      this.#drawTile(projected, theme, timestamp);
-    }
+    this.#projectedTiles = this.#projectBoard(this.#puzzle, timestamp);
+    this.#drawBoardShadow();
+    for (const projected of this.#projectedTiles) this.#drawTile(projected, timestamp);
     this.#drawParticles();
-    this.#drawCelebration(theme, timestamp);
+    this.#drawCelebration(timestamp);
+    this.#drawAmbientForeground(timestamp);
   }
 
-  #drawBackground(theme: Theme, timestamp: number): void {
+  #drawBackground(timestamp: number): void {
     const context = this.#context;
-    const gradient = context.createLinearGradient(0, 0, 0, this.#height);
-    gradient.addColorStop(0, theme.skyTop);
-    gradient.addColorStop(0.62, theme.skyBottom);
-    gradient.addColorStop(1, theme.floor);
-    context.fillStyle = gradient;
+    const portrait = this.#height > this.#width * 1.18;
+    const key = this.#scene === 'menu' ? 'atrium' : this.#scene === 'map' ? 'map' : this.#scene === 'victory' ? 'victory' : portrait ? 'portrait' : 'garden';
+    const image = this.#assets.get(key) ?? this.#assets.get('garden');
+
+    if (image?.complete && image.naturalWidth > 0) {
+      const parallax = this.#reducedMotion ? 0 : Math.sin(timestamp * 0.00007) * Math.min(12, this.#width * 0.008);
+      drawImageCover(context, image, -parallax, 0, this.#width + Math.abs(parallax) * 2, this.#height);
+    } else {
+      const gradient = context.createLinearGradient(0, 0, 0, this.#height);
+      gradient.addColorStop(0, '#071f24');
+      gradient.addColorStop(0.52, '#0d4a42');
+      gradient.addColorStop(1, '#061d1b');
+      context.fillStyle = gradient;
+      context.fillRect(0, 0, this.#width, this.#height);
+    }
+
+    const overlay = context.createLinearGradient(0, 0, 0, this.#height);
+    overlay.addColorStop(0, this.#scene === 'menu' ? 'rgba(2,15,15,.18)' : 'rgba(2,15,15,.28)');
+    overlay.addColorStop(0.45, 'rgba(3,24,22,.16)');
+    overlay.addColorStop(1, this.#scene === 'menu' ? 'rgba(1,13,13,.24)' : 'rgba(1,13,13,.52)');
+    context.fillStyle = overlay;
     context.fillRect(0, 0, this.#width, this.#height);
 
-    const glowX = this.#width * (0.72 + Math.sin(timestamp * 0.00008) * 0.05);
-    const glowY = this.#height * 0.18;
-    const glow = context.createRadialGradient(glowX, glowY, 0, glowX, glowY, this.#width * 0.48);
-    glow.addColorStop(0, theme.haze);
-    glow.addColorStop(1, 'rgba(0,0,0,0)');
-    context.fillStyle = glow;
+    const centerGlow = context.createRadialGradient(this.#width * 0.5, this.#height * 0.47, 0, this.#width * 0.5, this.#height * 0.47, Math.max(this.#width, this.#height) * 0.56);
+    centerGlow.addColorStop(0, 'rgba(39,153,127,.14)');
+    centerGlow.addColorStop(0.48, 'rgba(9,50,46,.05)');
+    centerGlow.addColorStop(1, this.#scene === 'menu' ? 'rgba(0,0,0,.16)' : 'rgba(0,0,0,.34)');
+    context.fillStyle = centerGlow;
     context.fillRect(0, 0, this.#width, this.#height);
 
-    context.save();
-    for (const pollen of this.#pollen) {
-      const alpha = this.#reducedMotion ? 0.16 : 0.1 + Math.sin(timestamp * 0.001 + pollen.phase) * 0.06;
-      context.fillStyle = `rgba(238, 255, 208, ${Math.max(0.04, alpha)})`;
-      context.beginPath();
-      context.arc(pollen.x * this.#width, pollen.y * this.#height, pollen.size, 0, Math.PI * 2);
-      context.fill();
+    if (this.#assetsReady) {
+      context.save();
+      context.globalCompositeOperation = 'screen';
+      for (const mote of this.#motes) {
+        const alpha = this.#reducedMotion ? 0.08 : 0.055 + Math.sin(timestamp * 0.0012 + mote.phase) * 0.035;
+        context.fillStyle = `rgba(235, 225, 151, ${Math.max(0.02, alpha)})`;
+        context.beginPath();
+        context.arc(mote.x * this.#width, mote.y * this.#height, mote.size, 0, Math.PI * 2);
+        context.fill();
+      }
+      context.restore();
     }
-    context.restore();
   }
 
-  #drawGlasshouse(theme: Theme, timestamp: number): void {
-    const context = this.#context;
-    const horizon = this.#height * 0.63;
-    context.save();
-    context.strokeStyle = this.#highContrast ? 'rgba(255,255,255,0.34)' : 'rgba(213, 255, 238, 0.13)';
-    context.lineWidth = 1;
-
-    for (let index = -2; index <= 2; index += 1) {
-      const x = this.#width * (0.5 + index * 0.19);
-      context.beginPath();
-      context.moveTo(x, horizon + this.#height * 0.18);
-      context.bezierCurveTo(
-        x - index * this.#width * 0.08,
-        this.#height * 0.25,
-        this.#width * 0.5 + index * this.#width * 0.1,
-        this.#height * 0.08,
-        this.#width * 0.5,
-        this.#height * 0.04,
-      );
-      context.stroke();
-    }
-
-    context.beginPath();
-    context.ellipse(this.#width / 2, horizon, this.#width * 0.46, this.#height * 0.48, 0, Math.PI, Math.PI * 2);
-    context.stroke();
-
-    context.globalAlpha = 0.12;
-    const shimmer = (timestamp * 0.025) % Math.max(1, this.#width);
-    const beam = context.createLinearGradient(shimmer - 100, 0, shimmer + 100, 0);
-    beam.addColorStop(0, 'rgba(255,255,255,0)');
-    beam.addColorStop(0.5, theme.glow);
-    beam.addColorStop(1, 'rgba(255,255,255,0)');
-    context.fillStyle = beam;
-    context.fillRect(0, 0, this.#width, horizon);
-    context.restore();
-  }
-
-  #projectBoard(puzzle: PuzzleDefinition): ProjectedTile[] {
-    const angle = this.#viewTurns * (Math.PI / 2);
-    const cos = Math.cos(angle);
-    const sin = Math.sin(angle);
-    const centerX = (puzzle.config.cols - 1) / 2;
-    const centerY = (puzzle.config.rows - 1) / 2;
-    const compact = this.#width <= 760;
-    const topInset = compact ? Math.min(132, this.#height * 0.23) : Math.min(76, this.#height * 0.12);
-    const bottomInset = compact ? Math.min(92, this.#height * 0.16) : Math.min(86, this.#height * 0.14);
-    const availableWidth = Math.max(180, this.#width * (compact ? 0.96 : 0.985));
-    const availableHeight = Math.max(150, this.#height - topInset - bottomInset);
-
-    const unitPoints: Point[] = [];
+  #projectBoard(puzzle: PuzzleDefinition, timestamp: number): ProjectedTile[] {
+    const densePortrait = this.#width < 680 && this.#height > this.#width * 1.15 && puzzle.tiles.length > 12;
+    const cameraAngle = (densePortrait ? 0 : Math.PI / 4) + this.#viewTurns * Math.PI / 2;
+    const verticalScale = densePortrait ? 0.72 : 0.52;
+    const viewTop = this.#width < 680 ? Math.max(150, this.#height * 0.16) : Math.max(98, this.#height * 0.105);
+    const viewBottom = this.#width < 680 ? Math.max(128, this.#height * 0.125) : Math.max(98, this.#height * 0.11);
+    const side = this.#width < 680 ? 18 : 38;
+    const worldCenterX = (puzzle.width - 1) / 2;
+    const worldCenterY = (puzzle.height - 1) / 2;
+    const sample: Point[] = [];
     for (const tile of puzzle.tiles) {
-      for (const [offsetX, offsetY] of [[-0.48, -0.48], [0.48, -0.48], [0.48, 0.48], [-0.48, 0.48]] as const) {
-        unitPoints.push(projectIso(tile.x - centerX + offsetX, tile.y - centerY + offsetY, cos, sin, 100, 54));
+      for (const [ox, oy] of [[-0.52,-0.52],[0.52,-0.52],[0.52,0.52],[-0.52,0.52]] as const) {
+        sample.push(projectUnit(tile.x + ox - worldCenterX, tile.y + oy - worldCenterY, cameraAngle, verticalScale));
       }
     }
-    const bounds = pointBounds(unitPoints);
-    const victoryZoom = 1 + Math.sin(this.#victoryProgress(performance.now()) * Math.PI) * 0.065;
-    const scale =
-      Math.min(
-      availableWidth / Math.max(1, bounds.maxX - bounds.minX),
-        (availableHeight * (compact ? 0.91 : 0.97)) / Math.max(1, bounds.maxY - bounds.minY),
-      ) * victoryZoom;
-    const tutorialScaleCap = puzzle.tiles.length <= 5 ? (compact ? 168 : 220) : compact ? 142 : 168;
-    const tileWidth = Math.max(34, Math.min(tutorialScaleCap, 100 * scale));
-    const tileHeight = tileWidth * 0.54;
+    const minX = Math.min(...sample.map((point) => point.x));
+    const maxX = Math.max(...sample.map((point) => point.x));
+    const minY = Math.min(...sample.map((point) => point.y));
+    const maxY = Math.max(...sample.map((point) => point.y));
+    const rawWidth = Math.max(0.1, maxX - minX);
+    const rawHeight = Math.max(0.1, maxY - minY);
+    const availableWidth = Math.max(120, this.#width - side * 2);
+    const availableHeight = Math.max(120, this.#height - viewTop - viewBottom);
+    const victoryProgress = this.#victoryStartedAt > 0 ? clamp((timestamp - this.#victoryStartedAt) / 600, 0, 1) : 0;
+    const pulse = 1 + this.#boardPulse * 0.008 + easeOutBack(victoryProgress) * 0.028;
+    let unit = Math.min(availableWidth / rawWidth, availableHeight / rawHeight) * 0.93 * pulse;
+    const maxUnit = this.#width < 680 ? Math.min(this.#width * 0.36, 180) : Math.min(this.#width * 0.21, 235);
+    unit = Math.min(unit, maxUnit);
+    const boardHeight = rawHeight * unit;
+    const centerX = this.#width * 0.5 - ((minX + maxX) * 0.5) * unit;
+    const centerY = viewTop + (availableHeight - boardHeight) * 0.48 - minY * unit;
 
-    const scaledPoints: Point[] = [];
-    for (const tile of puzzle.tiles) {
-      for (const [offsetX, offsetY] of [[-0.48, -0.48], [0.48, -0.48], [0.48, 0.48], [-0.48, 0.48]] as const) {
-        scaledPoints.push(projectIso(tile.x - centerX + offsetX, tile.y - centerY + offsetY, cos, sin, tileWidth, tileHeight));
-      }
-    }
-    const scaledBounds = pointBounds(scaledPoints);
-    const originX = this.#width / 2 - (scaledBounds.minX + scaledBounds.maxX) / 2;
-    const originY = topInset + availableHeight * (compact ? 0.52 : 0.5) - (scaledBounds.minY + scaledBounds.maxY) / 2;
-
-    return puzzle.tiles
-      .map((tile) => {
-        const localX = tile.x - centerX;
-        const localY = tile.y - centerY;
-        const center = addOrigin(projectIso(localX, localY, cos, sin, tileWidth, tileHeight), originX, originY);
-        const polygon = [
-          addOrigin(projectIso(localX - 0.45, localY - 0.45, cos, sin, tileWidth, tileHeight), originX, originY),
-          addOrigin(projectIso(localX + 0.45, localY - 0.45, cos, sin, tileWidth, tileHeight), originX, originY),
-          addOrigin(projectIso(localX + 0.45, localY + 0.45, cos, sin, tileWidth, tileHeight), originX, originY),
-          addOrigin(projectIso(localX - 0.45, localY + 0.45, cos, sin, tileWidth, tileHeight), originX, originY),
-        ];
-        return {
-          tile,
-          center,
-          polygon,
-          depth: center.y + center.x * 0.0001,
-          tileWidth,
-          tileHeight,
-        };
-      })
-      .sort((a, b) => a.depth - b.depth);
+    const projected = puzzle.tiles.map((tile): ProjectedTile => {
+      const corners = [
+        this.#projectPoint(tile.x - 0.48 - worldCenterX, tile.y - 0.48 - worldCenterY, cameraAngle, verticalScale, unit, centerX, centerY),
+        this.#projectPoint(tile.x + 0.48 - worldCenterX, tile.y - 0.48 - worldCenterY, cameraAngle, verticalScale, unit, centerX, centerY),
+        this.#projectPoint(tile.x + 0.48 - worldCenterX, tile.y + 0.48 - worldCenterY, cameraAngle, verticalScale, unit, centerX, centerY),
+        this.#projectPoint(tile.x - 0.48 - worldCenterX, tile.y + 0.48 - worldCenterY, cameraAngle, verticalScale, unit, centerX, centerY),
+      ] as [Point, Point, Point, Point];
+      const center = this.#projectPoint(tile.x - worldCenterX, tile.y - worldCenterY, cameraAngle, verticalScale, unit, centerX, centerY);
+      return {
+        tile,
+        center,
+        polygon: corners,
+        depth: center.y + center.x * 0.0001,
+        tileWidth: Math.max(distance(corners[0], corners[1]), distance(corners[1], corners[2])),
+        tileHeight: Math.min(distance(corners[0], corners[1]), distance(corners[1], corners[2])),
+        unit,
+        cameraAngle,
+        verticalScale,
+      };
+    });
+    return projected.sort((left, right) => left.depth - right.depth);
   }
 
-  #drawBoardShadow(theme: Theme): void {
-    if (this.#projectedTiles.length === 0) {
-      return;
-    }
+  #projectPoint(wx: number, wy: number, angle: number, verticalScale: number, unit: number, centerX: number, centerY: number): Point {
+    const point = projectUnit(wx, wy, angle, verticalScale);
+    return { x: centerX + point.x * unit, y: centerY + point.y * unit };
+  }
+
+  #drawBoardShadow(): void {
+    if (this.#projectedTiles.length === 0) return;
     const context = this.#context;
-    const centers = this.#projectedTiles.map((tile) => tile.center);
-    const bounds = pointBounds(centers);
-    const centerX = (bounds.minX + bounds.maxX) / 2;
-    const centerY = (bounds.minY + bounds.maxY) / 2 + 30;
-    const radiusX = (bounds.maxX - bounds.minX) * 0.62 + 60;
-    const radiusY = Math.max(30, (bounds.maxY - bounds.minY) * 0.45 + 28);
-    const shadow = context.createRadialGradient(centerX, centerY, 0, centerX, centerY, radiusX);
-    shadow.addColorStop(0, 'rgba(0,0,0,0.42)');
-    shadow.addColorStop(1, 'rgba(0,0,0,0)');
-    context.fillStyle = shadow;
+    const xs = this.#projectedTiles.flatMap((tile) => tile.polygon.map((point) => point.x));
+    const ys = this.#projectedTiles.flatMap((tile) => tile.polygon.map((point) => point.y));
+    const left = Math.min(...xs);
+    const right = Math.max(...xs);
+    const top = Math.min(...ys);
+    const bottom = Math.max(...ys);
+    context.save();
+    if (this.#profile.shadows) context.filter = 'blur(18px)';
+    context.fillStyle = 'rgba(0, 7, 7, .56)';
     context.beginPath();
-    context.ellipse(centerX, centerY, radiusX, radiusY, 0, 0, Math.PI * 2);
+    context.ellipse((left + right) / 2, bottom + (bottom - top) * 0.12, (right - left) * 0.52, Math.max(18, (bottom - top) * 0.17), 0, 0, Math.PI * 2);
     context.fill();
-
-    context.strokeStyle = theme.haze;
-    context.lineWidth = 1;
-    context.beginPath();
-    context.ellipse(centerX, centerY - 8, radiusX * 0.92, radiusY * 0.86, 0, 0, Math.PI * 2);
-    context.stroke();
+    context.restore();
   }
 
-  #drawTile(projected: ProjectedTile, theme: Theme, timestamp: number): void {
-    const { tile, polygon, center, tileWidth, tileHeight } = projected;
+  #drawTile(projected: ProjectedTile, timestamp: number): void {
     const context = this.#context;
+    const { tile, polygon, center, tileWidth, tileHeight } = projected;
     const powered = this.#analysis?.powered.has(tile.id) ?? false;
     const selected = tile.id === this.#selectedId;
     const hovered = tile.id === this.#hoveredId;
     const hinted = tile.id === this.#hintId;
     const coached = tile.id === this.#coachId;
-    const extrusion = Math.max(6, tileHeight * 0.18);
+    const thickness = Math.max(8, tileHeight * 0.29);
 
     context.save();
-    context.shadowColor = 'rgba(0, 0, 0, 0.34)';
-    context.shadowBlur = tileWidth * 0.13;
-    context.shadowOffsetY = extrusion * 0.8;
-    fillPolygon(context, polygon, 'rgba(4, 17, 18, 0.72)');
+    if (this.#profile.shadows) {
+      context.shadowColor = 'rgba(0, 0, 0, .4)';
+      context.shadowBlur = Math.max(8, tileWidth * 0.08);
+      context.shadowOffsetY = Math.max(6, tileHeight * 0.16);
+    }
+    for (let index = 0; index < 4; index += 1) {
+      const a = polygon[index] as Point;
+      const b = polygon[(index + 1) % 4] as Point;
+      const brightness = ((a.x + b.x) / 2 < center.x ? 0.82 : 1);
+      const gradient = context.createLinearGradient(0, Math.min(a.y, b.y), 0, Math.max(a.y, b.y) + thickness);
+      gradient.addColorStop(0, brightness < 0.9 ? '#173f3a' : '#24544a');
+      gradient.addColorStop(0.18, '#12352f');
+      gradient.addColorStop(1, '#061b1a');
+      context.fillStyle = gradient;
+      tracePolygon(context, [a, b, { x: b.x, y: b.y + thickness }, { x: a.x, y: a.y + thickness }]);
+      context.fill();
+      context.strokeStyle = 'rgba(3, 14, 13, .72)';
+      context.lineWidth = 1;
+      context.stroke();
+    }
     context.restore();
 
-    const visibleEdges = polygon
-      .map((point, index) => ({
-        a: point,
-        b: polygon[(index + 1) % polygon.length] as Point,
-        midY: (point.y + (polygon[(index + 1) % polygon.length] as Point).y) / 2,
-      }))
-      .sort((a, b) => b.midY - a.midY)
-      .slice(0, 2);
-    visibleEdges.forEach((edge, index) => {
-      fillPolygon(
-        context,
-        [edge.a, edge.b, { x: edge.b.x, y: edge.b.y + extrusion }, { x: edge.a.x, y: edge.a.y + extrusion }],
-        index === 0 ? 'rgba(12, 31, 31, 0.96)' : 'rgba(18, 43, 40, 0.94)',
-      );
-    });
-
-    const tileGradient = context.createLinearGradient(center.x - tileWidth * 0.5, center.y - tileHeight, center.x + tileWidth * 0.4, center.y + tileHeight);
-    tileGradient.addColorStop(0, powered ? lighten(theme.tilePowered, 18) : lighten(theme.tile, 11));
-    tileGradient.addColorStop(1, powered ? theme.tilePowered : theme.tile);
-    fillPolygon(context, polygon, tileGradient);
-
     context.save();
-    context.strokeStyle = this.#highContrast
-      ? powered
-        ? '#ffffff'
-        : '#d6eadf'
-      : powered
-        ? withAlpha(theme.glow, 0.72)
-        : 'rgba(222, 245, 229, 0.2)';
-    context.lineWidth = selected || hinted || coached ? Math.max(2.5, tileWidth * 0.04) : Math.max(1, tileWidth * 0.016);
-    context.beginPath();
-    polygon.forEach((point, index) => (index === 0 ? context.moveTo(point.x, point.y) : context.lineTo(point.x, point.y)));
-    context.closePath();
+    const topGradient = context.createLinearGradient(center.x - tileWidth * 0.34, center.y - tileHeight * 0.48, center.x + tileWidth * 0.36, center.y + tileHeight * 0.5);
+    if (powered) {
+      topGradient.addColorStop(0, this.#highContrast ? '#2b7665' : '#23635a');
+      topGradient.addColorStop(0.52, this.#highContrast ? '#1f675d' : '#194e47');
+      topGradient.addColorStop(1, '#123c38');
+    } else {
+      topGradient.addColorStop(0, this.#highContrast ? '#31554d' : '#244a43');
+      topGradient.addColorStop(0.52, this.#highContrast ? '#26483f' : '#183b37');
+      topGradient.addColorStop(1, '#102f2d');
+    }
+    context.fillStyle = topGradient;
+    tracePolygon(context, polygon);
+    context.fill();
+
+    if (this.#profile.texture) this.#drawTileTexture(projected, timestamp, powered);
+
+    const borderGradient = context.createLinearGradient(polygon[0].x, polygon[0].y, polygon[2].x, polygon[2].y);
+    borderGradient.addColorStop(0, selected || hinted || coached ? '#fff0a7' : '#e7be72');
+    borderGradient.addColorStop(0.5, selected || hinted || coached ? '#ffd15d' : '#8f6d3d');
+    borderGradient.addColorStop(1, selected || hinted || coached ? '#fff4be' : '#d7a95d');
+    context.strokeStyle = borderGradient;
+    context.lineWidth = selected || hinted || coached ? Math.max(2.5, tileWidth * 0.022) : Math.max(1.1, tileWidth * 0.009);
+    if (selected || hinted || coached) {
+      context.shadowColor = hinted ? '#8bfff0' : '#ffd96e';
+      context.shadowBlur = this.#profile.pipeGlow;
+    }
+    tracePolygon(context, polygon);
+    context.stroke();
+
+    context.strokeStyle = powered ? 'rgba(120, 255, 230, .35)' : 'rgba(255, 248, 207, .12)';
+    context.lineWidth = Math.max(0.8, tileWidth * 0.005);
+    tracePolygon(context, polygon.map((point) => lerpPoint(point, center, 0.07)) as [Point, Point, Point, Point]);
     context.stroke();
     context.restore();
 
-    this.#drawRivets(projected, theme);
-    this.#drawChannels(projected, theme, timestamp, powered);
-    this.#drawGear(projected, theme, powered, timestamp);
+    this.#drawRivets(projected, powered);
+    this.#drawMechanism(projected, timestamp, powered);
 
-    if (tile.kind === 'source') {
-      this.#drawSource(projected, theme, timestamp);
-    } else if (tile.kind === 'plant') {
-      this.#drawPlant(projected, theme, powered, timestamp);
-    } else if ((tile.solutionMask & (tile.solutionMask - 1)) === 0) {
-      this.#drawTerminalCap(projected, theme, powered);
-    }
-
-    if (this.#anchorIndicators && tile.fixed && tile.kind !== 'source') {
-      this.#drawAnchor(projected, theme);
-    }
-    if (selected && !coached) {
-      this.#drawSelection(projected, theme, timestamp, 'selected');
-    }
-    if (hinted) {
-      this.#drawSelection(projected, theme, timestamp, 'hint');
-    }
-    if (coached) {
-      this.#drawSelection(projected, theme, timestamp, 'coach');
-    } else if (hovered && !selected && !hinted) {
-      this.#drawSelection(projected, theme, timestamp, 'hover');
-    }
-    if (this.#leakWarnings && powered) {
-      this.#drawLeaks(projected, theme, timestamp);
-    }
+    if (tile.fixed) this.#drawAnchor(projected);
+    if (hovered && !selected) this.#drawHover(projected);
+    if (coached) this.#drawCoach(projected, timestamp);
+    if (hinted) this.#drawHint(projected, timestamp);
+    this.#drawTileLeaks(projected, timestamp);
   }
 
-  #drawRivets(projected: ProjectedTile, theme: Theme): void {
+  #drawTileTexture(projected: ProjectedTile, timestamp: number, powered: boolean): void {
     const context = this.#context;
-    context.fillStyle = withAlpha(theme.metal, 0.78);
-    for (const point of projected.polygon) {
-      const x = point.x + (projected.center.x - point.x) * 0.19;
-      const y = point.y + (projected.center.y - point.y) * 0.19;
+    const { tile, polygon, center, tileWidth, tileHeight } = projected;
+    const seed = hashSeed(`${tile.id}:surface`);
+    context.save();
+    tracePolygon(context, polygon);
+    context.clip();
+    context.globalAlpha = powered ? 0.13 : 0.09;
+    context.strokeStyle = powered ? '#7df6dd' : '#9fc6b8';
+    context.lineWidth = Math.max(0.5, tileWidth * 0.004);
+    for (let index = 0; index < 4; index += 1) {
+      const phase = ((seed >>> (index * 4)) & 15) / 15;
+      const radius = tileWidth * (0.12 + phase * 0.14);
       context.beginPath();
-      context.arc(x, y, Math.max(1.2, projected.tileWidth * 0.018), 0, Math.PI * 2);
+      context.ellipse(
+        center.x + Math.sin(seed + index) * tileWidth * 0.12,
+        center.y + Math.cos(seed * 0.01 + index) * tileHeight * 0.16,
+        radius,
+        radius * 0.34,
+        (index + phase) * 0.7,
+        Math.PI * 0.2,
+        Math.PI * 1.5,
+      );
+      context.stroke();
+    }
+    context.globalAlpha = 0.08;
+    context.fillStyle = '#f1d799';
+    const count = 8;
+    for (let index = 0; index < count; index += 1) {
+      const x = center.x + (((seed + index * 2654435761) % 1000) / 1000 - 0.5) * tileWidth * 0.68;
+      const y = center.y + (((seed * 3 + index * 7919) % 1000) / 1000 - 0.5) * tileHeight * 0.55;
+      context.beginPath();
+      context.arc(x, y, Math.max(0.5, tileWidth * 0.004), 0, Math.PI * 2);
       context.fill();
     }
+    if (powered && !this.#reducedMotion) {
+      const sweep = ((timestamp * 0.00009 + (seed % 100) / 100) % 1) * tileWidth * 1.2 - tileWidth * 0.6;
+      const sheen = context.createLinearGradient(center.x + sweep - tileWidth * 0.12, center.y, center.x + sweep + tileWidth * 0.12, center.y);
+      sheen.addColorStop(0, 'rgba(255,255,255,0)');
+      sheen.addColorStop(0.5, 'rgba(167,255,236,.22)');
+      sheen.addColorStop(1, 'rgba(255,255,255,0)');
+      context.fillStyle = sheen;
+      context.fillRect(center.x - tileWidth, center.y - tileHeight, tileWidth * 2, tileHeight * 2);
+    }
+    context.restore();
   }
 
-  #drawChannels(projected: ProjectedTile, theme: Theme, timestamp: number, powered: boolean): void {
+  #drawRivets(projected: ProjectedTile, powered: boolean): void {
     const context = this.#context;
-    const displayTurns = this.#displayTurns.get(projected.tile.id) ?? projected.tile.visualTurns;
-    const localRotation = displayTurns * (Math.PI / 2);
-    const viewRotation = this.#viewTurns * (Math.PI / 2);
-    const baseDirections = directionVectors(projected.tile.baseMask);
-    const endpoints = baseDirections.map((vector) => {
-      const local = rotateVector(vector.x, vector.y, localRotation);
-      const screenVector = projectVector(local.x, local.y, viewRotation, projected.tileWidth, projected.tileHeight);
-      return {
-        x: projected.center.x + screenVector.x * 0.43,
-        y: projected.center.y + screenVector.y * 0.43,
-      };
-    });
+    const { polygon, center, tileWidth } = projected;
+    const radius = Math.max(1.8, tileWidth * 0.018);
+    for (const corner of polygon) {
+      const point = lerpPoint(corner, center, 0.14);
+      const gradient = context.createRadialGradient(point.x - radius * 0.4, point.y - radius * 0.5, 0, point.x, point.y, radius * 1.25);
+      gradient.addColorStop(0, '#fff0a8');
+      gradient.addColorStop(0.35, powered ? '#cfaa57' : '#b68c49');
+      gradient.addColorStop(1, '#4b351e');
+      context.fillStyle = gradient;
+      context.beginPath();
+      context.arc(point.x, point.y, radius, 0, Math.PI * 2);
+      context.fill();
+      context.strokeStyle = 'rgba(36,22,11,.72)';
+      context.lineWidth = Math.max(0.6, radius * 0.28);
+      context.stroke();
+    }
+  }
 
+  #drawMechanism(projected: ProjectedTile, timestamp: number, powered: boolean): void {
+    const { tile } = projected;
+    const displayTurns = this.#displayTurns.get(tile.id) ?? tile.visualTurns;
+    const armPoints: Point[] = [];
+    const rotation = displayTurns * Math.PI / 2;
+    for (const direction of DIRECTIONS) {
+      if ((tile.baseMask & direction) === 0) continue;
+      const [baseX, baseY] = DIRECTION_VECTOR[direction];
+      const dx = baseX * Math.cos(rotation) - baseY * Math.sin(rotation);
+      const dy = baseX * Math.sin(rotation) + baseY * Math.cos(rotation);
+      armPoints.push(this.#offsetPoint(projected, dx * 0.43, dy * 0.43));
+    }
+
+    for (const endpoint of armPoints) this.#drawPipe(projected.center, endpoint, projected.tileWidth, timestamp, powered, tile.id);
+
+    if (tile.kind === 'source') this.#drawSunwell(projected, timestamp, powered);
+    else this.#drawGear(projected, displayTurns, powered);
+    if (tile.kind === 'plant') this.#drawPlant(projected, timestamp, powered, tile.plantKind ?? 'lumen');
+  }
+
+  #drawPipe(start: Point, end: Point, tileWidth: number, timestamp: number, powered: boolean, id: string): void {
+    const context = this.#context;
+    const bodyWidth = Math.max(5.5, tileWidth * 0.092);
+    context.save();
     context.lineCap = 'round';
     context.lineJoin = 'round';
-    for (const endpoint of endpoints) {
-      context.strokeStyle = 'rgba(4, 18, 18, 0.78)';
-      context.lineWidth = Math.max(7, projected.tileWidth * 0.13);
+    context.strokeStyle = 'rgba(0, 8, 8, .64)';
+    context.lineWidth = bodyWidth * 1.52;
+    context.beginPath();
+    context.moveTo(start.x, start.y + bodyWidth * 0.22);
+    context.lineTo(end.x, end.y + bodyWidth * 0.22);
+    context.stroke();
+
+    const brass = context.createLinearGradient(start.x, start.y - bodyWidth, end.x, end.y + bodyWidth);
+    brass.addColorStop(0, '#6c4924');
+    brass.addColorStop(0.22, '#e6bb6d');
+    brass.addColorStop(0.48, '#9c6c34');
+    brass.addColorStop(0.72, '#f0ca79');
+    brass.addColorStop(1, '#5b3c20');
+    context.strokeStyle = brass;
+    context.lineWidth = bodyWidth;
+    context.beginPath();
+    context.moveTo(start.x, start.y);
+    context.lineTo(end.x, end.y);
+    context.stroke();
+
+    context.strokeStyle = 'rgba(42,24,13,.72)';
+    context.lineWidth = bodyWidth * 0.48;
+    context.beginPath();
+    context.moveTo(start.x, start.y);
+    context.lineTo(end.x, end.y);
+    context.stroke();
+
+    if (powered) {
+      context.globalCompositeOperation = 'screen';
+      context.shadowColor = '#65fff0';
+      context.shadowBlur = this.#profile.pipeGlow;
+      context.strokeStyle = 'rgba(72,255,235,.54)';
+      context.lineWidth = bodyWidth * 0.72;
       context.beginPath();
-      context.moveTo(projected.center.x, projected.center.y);
-      context.lineTo(endpoint.x, endpoint.y);
+      context.moveTo(start.x, start.y);
+      context.lineTo(end.x, end.y);
+      context.stroke();
+      context.shadowBlur = Math.max(4, this.#profile.pipeGlow * 0.45);
+      context.strokeStyle = '#bafff5';
+      context.lineWidth = Math.max(1.7, bodyWidth * 0.2);
+      context.beginPath();
+      context.moveTo(start.x, start.y);
+      context.lineTo(end.x, end.y);
       context.stroke();
 
-      context.strokeStyle = powered
-        ? withAlpha(theme.glow, this.#highContrast ? 1 : 0.9)
-        : this.#highContrast
-          ? 'rgba(255,255,255,0.72)'
-          : 'rgba(143, 169, 158, 0.5)';
-      context.lineWidth = Math.max(2.5, projected.tileWidth * 0.052);
-      context.beginPath();
-      context.moveTo(projected.center.x, projected.center.y);
-      context.lineTo(endpoint.x, endpoint.y);
-      context.stroke();
-
-      if (powered) {
-        context.save();
-        context.shadowColor = theme.glow;
-        context.shadowBlur = projected.tileWidth * 0.18;
-        context.strokeStyle = withAlpha(theme.glow, 0.34);
-        context.lineWidth = Math.max(4, projected.tileWidth * 0.085);
+      if (!this.#reducedMotion) {
+        const phase = (timestamp * 0.00055 + (hashSeed(id) % 1000) / 1000) % 1;
+        const pulse = lerpPoint(start, end, phase);
+        context.fillStyle = '#ffffff';
+        context.shadowColor = '#8ffff2';
+        context.shadowBlur = this.#profile.pipeGlow;
         context.beginPath();
-        context.moveTo(projected.center.x, projected.center.y);
-        context.lineTo(endpoint.x, endpoint.y);
-        context.stroke();
-        context.restore();
-
-        if (!this.#reducedMotion) {
-          const phase = (timestamp * 0.0012 + hashSeed(`${projected.tile.id}:${endpoint.x}`) * 0.000001) % 1;
-          const pulseX = projected.center.x + (endpoint.x - projected.center.x) * phase;
-          const pulseY = projected.center.y + (endpoint.y - projected.center.y) * phase;
-          context.fillStyle = '#ffffff';
-          context.beginPath();
-          context.arc(pulseX, pulseY, Math.max(1.5, projected.tileWidth * 0.025), 0, Math.PI * 2);
-          context.fill();
-        }
+        context.arc(pulse.x, pulse.y, Math.max(2, bodyWidth * 0.27), 0, Math.PI * 2);
+        context.fill();
       }
-
-      context.save();
-      context.fillStyle = powered ? '#f7ffff' : 'rgba(7, 22, 22, 0.92)';
-      context.strokeStyle = powered ? withAlpha(theme.glow, 0.95) : withAlpha(theme.metal, 0.62);
-      context.lineWidth = Math.max(1.2, projected.tileWidth * 0.018);
-      context.beginPath();
-      context.arc(endpoint.x, endpoint.y, Math.max(2.4, projected.tileWidth * 0.041), 0, Math.PI * 2);
-      context.fill();
-      context.stroke();
-      context.restore();
     }
+    context.restore();
+
+    const ringRadius = bodyWidth * 0.62;
+    const ring = context.createRadialGradient(end.x - ringRadius * 0.3, end.y - ringRadius * 0.4, 0, end.x, end.y, ringRadius);
+    ring.addColorStop(0, powered ? '#dbfff8' : '#f7d78a');
+    ring.addColorStop(0.32, powered ? '#65e8d7' : '#b08341');
+    ring.addColorStop(0.66, '#171f1c');
+    ring.addColorStop(1, '#060d0c');
+    context.fillStyle = ring;
+    context.beginPath();
+    context.arc(end.x, end.y, ringRadius, 0, Math.PI * 2);
+    context.fill();
+    context.strokeStyle = powered ? '#9effed' : '#d4a958';
+    context.lineWidth = Math.max(1, bodyWidth * 0.12);
+    context.stroke();
+    context.fillStyle = powered ? '#d9fff9' : '#0d1c1a';
+    context.beginPath();
+    context.arc(end.x, end.y, ringRadius * 0.42, 0, Math.PI * 2);
+    context.fill();
   }
 
-  #drawGear(projected: ProjectedTile, theme: Theme, powered: boolean, timestamp: number): void {
+  #drawGear(projected: ProjectedTile, turns: number, powered: boolean): void {
     const context = this.#context;
-    const radius = Math.max(7, projected.tileWidth * 0.115);
-    const rotation = (this.#displayTurns.get(projected.tile.id) ?? 0) * (Math.PI / 2) + (powered && !this.#reducedMotion ? timestamp * 0.00018 : 0);
+    const radius = Math.max(11, projected.tileWidth * 0.115);
+    const teeth = 12;
     context.save();
     context.translate(projected.center.x, projected.center.y);
-    context.rotate(rotation);
-    context.strokeStyle = powered ? theme.glow : theme.metal;
-    context.lineWidth = Math.max(2, projected.tileWidth * 0.025);
-    for (let index = 0; index < 8; index += 1) {
-      context.rotate(Math.PI / 4);
-      context.beginPath();
-      context.moveTo(radius * 0.88, 0);
-      context.lineTo(radius * 1.28, 0);
-      context.stroke();
+    context.scale(1, 0.72);
+    context.rotate(turns * Math.PI / 2 + this.#viewTurns * Math.PI * 0.04);
+    const gearGradient = context.createRadialGradient(-radius * 0.25, -radius * 0.32, 0, 0, 0, radius * 1.28);
+    gearGradient.addColorStop(0, '#fff1ae');
+    gearGradient.addColorStop(0.32, '#d7a653');
+    gearGradient.addColorStop(0.68, '#8b5e2f');
+    gearGradient.addColorStop(1, '#392619');
+    context.fillStyle = gearGradient;
+    context.shadowColor = powered ? '#6dffea' : 'rgba(0,0,0,.5)';
+    context.shadowBlur = powered ? this.#profile.pipeGlow * 0.55 : 5;
+    context.beginPath();
+    for (let index = 0; index < teeth * 2; index += 1) {
+      const angle = index * Math.PI / teeth;
+      const distanceValue = index % 2 === 0 ? radius * 1.22 : radius * 0.94;
+      const x = Math.cos(angle) * distanceValue;
+      const y = Math.sin(angle) * distanceValue;
+      if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
     }
-    context.fillStyle = powered ? withAlpha(theme.glow, 0.72) : withAlpha(theme.metal, 0.82);
+    context.closePath();
+    context.fill();
+    context.strokeStyle = '#f1ca77';
+    context.lineWidth = Math.max(1, radius * 0.08);
+    context.stroke();
+    context.fillStyle = '#15332e';
+    context.beginPath();
+    context.arc(0, 0, radius * 0.58, 0, Math.PI * 2);
+    context.fill();
+    context.strokeStyle = powered ? '#98fff0' : '#b48748';
+    context.lineWidth = Math.max(1, radius * 0.11);
+    context.stroke();
+    context.fillStyle = powered ? '#c6fff7' : '#071918';
+    context.shadowColor = powered ? '#72fff0' : 'transparent';
+    context.shadowBlur = powered ? this.#profile.pipeGlow : 0;
+    context.beginPath();
+    context.arc(0, 0, radius * 0.23, 0, Math.PI * 2);
+    context.fill();
+    context.restore();
+  }
+
+  #drawSunwell(projected: ProjectedTile, timestamp: number, powered: boolean): void {
+    const context = this.#context;
+    const center = projected.center;
+    const radius = Math.max(16, projected.tileWidth * 0.14);
+    const pulse = this.#reducedMotion ? 1 : 1 + Math.sin(timestamp * 0.004) * 0.045;
+    context.save();
+    context.translate(center.x, center.y - radius * 0.1);
+    context.scale(1, 0.72);
+    context.shadowColor = '#72fff0';
+    context.shadowBlur = this.#profile.pipeGlow * 1.4;
+    const base = context.createRadialGradient(-radius * 0.3, -radius * 0.35, 0, 0, 0, radius * 1.35);
+    base.addColorStop(0, '#fff1ad');
+    base.addColorStop(0.35, '#c99a4c');
+    base.addColorStop(0.7, '#57401f');
+    base.addColorStop(1, '#15201a');
+    context.fillStyle = base;
+    context.beginPath();
+    context.arc(0, 0, radius * 1.08, 0, Math.PI * 2);
+    context.fill();
+    context.strokeStyle = '#f1ca72';
+    context.lineWidth = radius * 0.09;
+    context.stroke();
+    context.strokeStyle = '#77f9e6';
+    context.lineWidth = radius * 0.12;
+    context.beginPath();
+    context.arc(0, 0, radius * 0.7, 0, Math.PI * 2);
+    context.stroke();
+    context.fillStyle = '#0a3c37';
+    context.beginPath();
+    context.arc(0, 0, radius * 0.5, 0, Math.PI * 2);
+    context.fill();
+    context.restore();
+
+    const starY = center.y - radius * 0.55;
+    context.save();
+    context.translate(center.x, starY);
+    context.scale(pulse, pulse);
+    context.globalCompositeOperation = 'screen';
+    context.shadowColor = '#a8fff5';
+    context.shadowBlur = this.#profile.pipeGlow * 1.8;
+    context.fillStyle = '#e9fffb';
+    drawStar(context, 8, radius * 0.74, radius * 0.18);
+    context.fill();
+    context.restore();
+
+    context.save();
+    context.strokeStyle = powered ? '#bafff5' : '#6de9db';
+    context.lineWidth = Math.max(1.6, radius * 0.09);
+    context.shadowColor = '#6ffff0';
+    context.shadowBlur = this.#profile.pipeGlow;
+    context.beginPath();
+    context.arc(center.x, center.y - radius * 0.24, radius * 1.16, Math.PI * 1.08, Math.PI * 1.92);
+    context.stroke();
+    context.restore();
+  }
+
+  #drawPlant(projected: ProjectedTile, timestamp: number, powered: boolean, plantKind: PlantKind): void {
+    const context = this.#context;
+    const center = projected.center;
+    const scale = Math.max(0.75, projected.tileWidth / 120);
+    const [light, mid, dark] = PLANT_COLORS[plantKind];
+    const bloom = powered ? 1 : 0.63;
+    const sway = this.#reducedMotion ? 0 : Math.sin(timestamp * 0.0016 + hashSeed(projected.tile.id) * 0.001) * 2.4 * scale;
+    const potY = center.y - 2 * scale;
+
+    context.save();
+    if (powered) {
+      context.shadowColor = mid;
+      context.shadowBlur = this.#profile.pipeGlow * 0.9;
+    }
+    const potGradient = context.createLinearGradient(center.x - 16 * scale, potY - 4 * scale, center.x + 16 * scale, potY + 22 * scale);
+    potGradient.addColorStop(0, '#edc886');
+    potGradient.addColorStop(0.3, '#9a5f35');
+    potGradient.addColorStop(0.65, '#6b3b27');
+    potGradient.addColorStop(1, '#2f2119');
+    context.fillStyle = potGradient;
+    context.beginPath();
+    context.moveTo(center.x - 15 * scale, potY - 1 * scale);
+    context.quadraticCurveTo(center.x, potY + 5 * scale, center.x + 15 * scale, potY - 1 * scale);
+    context.lineTo(center.x + 11 * scale, potY + 18 * scale);
+    context.quadraticCurveTo(center.x, potY + 24 * scale, center.x - 11 * scale, potY + 18 * scale);
+    context.closePath();
+    context.fill();
+    context.strokeStyle = '#e0b465';
+    context.lineWidth = Math.max(1, scale * 1.1);
+    context.stroke();
+    context.strokeStyle = 'rgba(255,225,155,.45)';
+    context.beginPath();
+    context.arc(center.x, potY + 8 * scale, 7 * scale, 0.2, Math.PI - 0.2);
+    context.stroke();
+
+    const stemTop = potY - 30 * scale * bloom;
+    context.strokeStyle = powered ? '#6be4a9' : '#477760';
+    context.lineWidth = 4.2 * scale;
+    context.lineCap = 'round';
+    context.beginPath();
+    context.moveTo(center.x, potY + 2 * scale);
+    context.quadraticCurveTo(center.x + sway * 0.4, potY - 15 * scale, center.x + sway, stemTop);
+    context.stroke();
+
+    for (const side of [-1, 1]) {
+      context.save();
+      context.translate(center.x + sway * 0.45, potY - 14 * scale);
+      context.rotate(side * 0.52 + sway * 0.004);
+      context.fillStyle = powered ? '#5cbd77' : '#365c49';
+      context.beginPath();
+      context.ellipse(side * 7 * scale, 0, 11 * scale, 5.5 * scale, 0, 0, Math.PI * 2);
+      context.fill();
+      context.restore();
+    }
+
+    const blossomX = center.x + sway;
+    const blossomY = stemTop;
+    const petalCount = plantKind === 'orchid' ? 6 : plantKind === 'moonfern' ? 8 : 10;
+    context.translate(blossomX, blossomY);
+    context.rotate(Math.sin(timestamp * 0.001 + hashSeed(projected.tile.id)) * 0.025);
+    for (let index = 0; index < petalCount; index += 1) {
+      const angle = index * Math.PI * 2 / petalCount;
+      const length = (plantKind === 'starbell' ? 15 : 12) * scale * bloom;
+      const width = (plantKind === 'orchid' ? 7 : 5.6) * scale * bloom;
+      context.save();
+      context.rotate(angle);
+      const petalGradient = context.createLinearGradient(0, 0, length, 0);
+      petalGradient.addColorStop(0, light);
+      petalGradient.addColorStop(0.52, mid);
+      petalGradient.addColorStop(1, dark);
+      context.fillStyle = petalGradient;
+      context.beginPath();
+      context.moveTo(0, 0);
+      context.bezierCurveTo(length * 0.3, -width, length * 0.86, -width * 0.45, length, 0);
+      context.bezierCurveTo(length * 0.86, width * 0.45, length * 0.3, width, 0, 0);
+      context.fill();
+      context.restore();
+    }
+    context.fillStyle = powered ? '#fff6ac' : '#9c824c';
+    context.shadowColor = powered ? '#fff09a' : 'transparent';
+    context.shadowBlur = powered ? this.#profile.pipeGlow * 0.55 : 0;
+    context.beginPath();
+    context.arc(0, 0, 4.8 * scale * bloom, 0, Math.PI * 2);
+    context.fill();
+    context.restore();
+  }
+
+  #drawAnchor(projected: ProjectedTile): void {
+    const context = this.#context;
+    const radius = Math.max(7, projected.tileWidth * 0.055);
+    const position = lerpPoint(projected.polygon[2], projected.center, 0.28);
+    context.save();
+    context.translate(position.x, position.y);
+    context.scale(1, 0.84);
+    context.fillStyle = 'rgba(8, 24, 22, .88)';
+    context.strokeStyle = '#e5b963';
+    context.lineWidth = Math.max(1.1, radius * 0.13);
     context.beginPath();
     context.arc(0, 0, radius, 0, Math.PI * 2);
     context.fill();
-    context.fillStyle = 'rgba(8, 25, 25, 0.88)';
-    context.beginPath();
-    context.arc(0, 0, radius * 0.38, 0, Math.PI * 2);
-    context.fill();
-    context.restore();
-  }
-
-  #drawSource(projected: ProjectedTile, theme: Theme, timestamp: number): void {
-    const context = this.#context;
-    const pulse = this.#reducedMotion ? 1 : 0.88 + Math.sin(timestamp * 0.003) * 0.12;
-    const y = projected.center.y - projected.tileHeight * 0.55;
-    const radius = projected.tileWidth * 0.17 * pulse;
-    context.save();
-    context.shadowColor = theme.glow;
-    context.shadowBlur = projected.tileWidth * 0.42;
-    const gradient = context.createRadialGradient(projected.center.x - radius * 0.3, y - radius * 0.35, 0, projected.center.x, y, radius);
-    gradient.addColorStop(0, '#ffffff');
-    gradient.addColorStop(0.35, theme.glow);
-    gradient.addColorStop(1, withAlpha(theme.glow, 0.08));
-    context.fillStyle = gradient;
-    context.beginPath();
-    context.arc(projected.center.x, y, radius, 0, Math.PI * 2);
-    context.fill();
-    context.restore();
-
-    context.strokeStyle = withAlpha(theme.metal, 0.9);
-    context.lineWidth = Math.max(2, projected.tileWidth * 0.025);
-    context.beginPath();
-    context.ellipse(projected.center.x, projected.center.y - projected.tileHeight * 0.2, radius * 1.28, radius * 0.5, 0, 0, Math.PI * 2);
     context.stroke();
-
-    context.save();
-    context.translate(projected.center.x, y);
-    context.fillStyle = '#ffffff';
-    context.shadowColor = theme.glow;
-    context.shadowBlur = projected.tileWidth * 0.28;
-    context.font = `700 ${Math.max(14, projected.tileWidth * 0.18)}px Georgia, serif`;
-    context.textAlign = 'center';
-    context.textBaseline = 'middle';
-    context.fillText('✦', 0, 0);
+    context.beginPath();
+    context.arc(0, -radius * 0.15, radius * 0.35, Math.PI, 0);
+    context.stroke();
+    context.fillStyle = '#e8c474';
+    context.fillRect(-radius * 0.35, -radius * 0.06, radius * 0.7, radius * 0.48);
     context.restore();
   }
 
-  #drawPlant(projected: ProjectedTile, theme: Theme, powered: boolean, timestamp: number): void {
+  #drawHover(projected: ProjectedTile): void {
     const context = this.#context;
-    const sway = this.#reducedMotion ? 0 : Math.sin(timestamp * 0.0017 + hashSeed(projected.tile.id)) * projected.tileWidth * 0.018;
-    const baseX = projected.center.x;
-    const baseY = projected.center.y - projected.tileHeight * 0.12;
-    const height = projected.tileWidth * (powered ? 0.42 : 0.31);
-    const bloom = powered ? 1 : 0.45;
+    context.save();
+    context.strokeStyle = 'rgba(192, 255, 239, .62)';
+    context.lineWidth = Math.max(1.6, projected.tileWidth * 0.013);
+    context.shadowColor = '#88fce7';
+    context.shadowBlur = Math.max(6, this.#profile.pipeGlow * 0.55);
+    tracePolygon(context, projected.polygon.map((point) => lerpPoint(point, projected.center, -0.025)) as [Point, Point, Point, Point]);
+    context.stroke();
+    context.restore();
+  }
 
-    context.fillStyle = '#6b4d35';
+  #drawCoach(projected: ProjectedTile, timestamp: number): void {
+    const context = this.#context;
+    const pulse = this.#reducedMotion ? 0 : Math.sin(timestamp * 0.006) * projected.tileWidth * 0.018;
+    const radius = projected.tileWidth * 0.31 + pulse;
+    context.save();
+    context.strokeStyle = '#ffe27f';
+    context.lineWidth = Math.max(2, projected.tileWidth * 0.02);
+    context.setLineDash([Math.max(5, projected.tileWidth * 0.05), Math.max(4, projected.tileWidth * 0.035)]);
+    context.lineDashOffset = this.#reducedMotion ? 0 : -timestamp * 0.025;
+    context.shadowColor = '#ffd75b';
+    context.shadowBlur = this.#profile.pipeGlow * 1.2;
     context.beginPath();
-    context.moveTo(baseX - projected.tileWidth * 0.11, baseY - projected.tileHeight * 0.05);
-    context.lineTo(baseX + projected.tileWidth * 0.11, baseY - projected.tileHeight * 0.05);
-    context.lineTo(baseX + projected.tileWidth * 0.075, baseY + projected.tileHeight * 0.22);
-    context.lineTo(baseX - projected.tileWidth * 0.075, baseY + projected.tileHeight * 0.22);
+    context.ellipse(projected.center.x, projected.center.y, radius, radius * 0.52, 0, 0, Math.PI * 2);
+    context.stroke();
+    context.setLineDash([]);
+
+    const arrowX = projected.center.x + projected.tileWidth * 0.36;
+    const arrowY = projected.center.y + projected.tileHeight * 0.2;
+    context.translate(arrowX, arrowY);
+    context.rotate(-0.4);
+    context.fillStyle = '#ffe88e';
+    context.beginPath();
+    context.moveTo(0, 0);
+    context.lineTo(projected.tileWidth * 0.11, -projected.tileWidth * 0.05);
+    context.lineTo(projected.tileWidth * 0.08, projected.tileWidth * 0.005);
+    context.lineTo(projected.tileWidth * 0.16, projected.tileWidth * 0.02);
+    context.lineTo(projected.tileWidth * 0.07, projected.tileWidth * 0.045);
+    context.lineTo(projected.tileWidth * 0.075, projected.tileWidth * 0.095);
     context.closePath();
     context.fill();
-    context.strokeStyle = withAlpha(theme.metal, 0.82);
-    context.lineWidth = Math.max(1, projected.tileWidth * 0.018);
-    context.stroke();
-
-    context.strokeStyle = powered ? '#89e17d' : '#5e8d66';
-    context.lineWidth = Math.max(2, projected.tileWidth * 0.035);
-    context.lineCap = 'round';
-    context.beginPath();
-    context.moveTo(baseX, baseY);
-    context.quadraticCurveTo(baseX + sway * 0.25, baseY - height * 0.5, baseX + sway, baseY - height);
-    context.stroke();
-
-    this.#drawLeaf(baseX + sway * 0.35, baseY - height * 0.45, -0.62, projected.tileWidth * 0.12, powered);
-    this.#drawLeaf(baseX + sway * 0.62, baseY - height * 0.67, 0.58, projected.tileWidth * 0.11, powered);
-
-    const flowerX = baseX + sway;
-    const flowerY = baseY - height;
-    const petals = projected.tile.plantKind === 'lotus' ? 7 : projected.tile.plantKind === 'orchid' ? 5 : 6;
-    const petalRadius = projected.tileWidth * 0.085 * bloom;
-    context.save();
-    context.translate(flowerX, flowerY);
-    context.rotate(hashSeed(projected.tile.id) * 0.00001 + (powered && !this.#reducedMotion ? timestamp * 0.00008 : 0));
-    for (let index = 0; index < petals; index += 1) {
-      context.rotate((Math.PI * 2) / petals);
-      context.fillStyle = plantColor(projected.tile.plantKind ?? 'aster', index, powered, theme);
-      context.beginPath();
-      context.ellipse(petalRadius * 0.75, 0, petalRadius, petalRadius * 0.5, 0, 0, Math.PI * 2);
-      context.fill();
-    }
-    context.fillStyle = powered ? theme.accent : '#a28863';
-    context.beginPath();
-    context.arc(0, 0, petalRadius * 0.45, 0, Math.PI * 2);
-    context.fill();
-    if (powered) {
-      context.shadowColor = theme.glow;
-      context.shadowBlur = projected.tileWidth * 0.22;
-      context.strokeStyle = withAlpha(theme.glow, 0.7);
-      context.lineWidth = 1;
-      context.beginPath();
-      context.arc(0, 0, petalRadius * 1.45, 0, Math.PI * 2);
-      context.stroke();
-    }
     context.restore();
   }
 
-  #drawLeaf(x: number, y: number, angle: number, size: number, powered: boolean): void {
+  #drawHint(projected: ProjectedTile, timestamp: number): void {
     const context = this.#context;
-    context.save();
-    context.translate(x, y);
-    context.rotate(angle);
-    context.fillStyle = powered ? '#7ddf78' : '#50785b';
-    context.beginPath();
-    context.ellipse(size * 0.45, 0, size, size * 0.42, 0, 0, Math.PI * 2);
-    context.fill();
-    context.restore();
-  }
-
-  #drawTerminalCap(projected: ProjectedTile, theme: Theme, powered: boolean): void {
-    const context = this.#context;
-    const radius = projected.tileWidth * 0.055;
-    context.fillStyle = powered ? theme.glow : theme.metal;
-    context.beginPath();
-    context.arc(projected.center.x, projected.center.y - radius * 0.15, radius, 0, Math.PI * 2);
-    context.fill();
-  }
-
-  #drawAnchor(projected: ProjectedTile, theme: Theme): void {
-    const context = this.#context;
-    const x = projected.center.x + projected.tileWidth * 0.25;
-    const y = projected.center.y - projected.tileHeight * 0.12;
-    const radius = projected.tileWidth * 0.072;
-    context.save();
-    context.fillStyle = 'rgba(4, 20, 20, 0.82)';
-    context.strokeStyle = withAlpha(theme.metal, 0.98);
-    context.lineWidth = Math.max(1.5, projected.tileWidth * 0.022);
-    context.beginPath();
-    context.arc(x, y + radius * 0.14, radius * 1.05, 0, Math.PI * 2);
-    context.fill();
-    context.stroke();
-    context.beginPath();
-    context.arc(x, y, radius * 0.55, Math.PI, 0);
-    context.stroke();
-    context.fillStyle = withAlpha(theme.metal, 0.96);
-    context.fillRect(x - radius * 0.7, y, radius * 1.4, radius * 0.95);
-    context.fillStyle = 'rgba(5, 24, 23, 0.9)';
-    context.beginPath();
-    context.arc(x, y + radius * 0.4, Math.max(1, radius * 0.16), 0, Math.PI * 2);
-    context.fill();
-    context.restore();
-  }
-
-  #drawSelection(
-    projected: ProjectedTile,
-    theme: Theme,
-    timestamp: number,
-    kind: 'selected' | 'hint' | 'coach' | 'hover',
-  ): void {
-    const context = this.#context;
-    const pulse = this.#reducedMotion ? 1 : 1 + Math.sin(timestamp * (kind === 'coach' ? 0.009 : 0.006)) * (kind === 'coach' ? 0.11 : 0.07);
-    const color = kind === 'coach' || kind === 'hint' ? theme.accent : kind === 'hover' ? withAlpha(theme.glow, 0.66) : '#ffffff';
-    context.save();
-    context.globalAlpha = kind === 'hover' ? 0.55 : 1;
-    context.strokeStyle = color;
-    context.shadowColor = color;
-    context.shadowBlur = projected.tileWidth * (kind === 'coach' ? 0.36 : 0.22);
-    context.lineWidth = Math.max(2, projected.tileWidth * (kind === 'coach' ? 0.05 : kind === 'hint' ? 0.038 : 0.027));
-    context.beginPath();
-    context.ellipse(
-      projected.center.x,
-      projected.center.y,
-      projected.tileWidth * 0.46 * pulse,
-      projected.tileHeight * 0.52 * pulse,
-      0,
-      0,
-      Math.PI * 2,
-    );
-    context.stroke();
-    if (kind === 'coach') {
-      context.setLineDash([Math.max(3, projected.tileWidth * 0.05), Math.max(3, projected.tileWidth * 0.035)]);
-      context.lineWidth = Math.max(1.5, projected.tileWidth * 0.018);
-      context.beginPath();
-      context.ellipse(
-        projected.center.x,
-        projected.center.y,
-        projected.tileWidth * 0.57 * pulse,
-        projected.tileHeight * 0.64 * pulse,
-        0,
-        0,
-        Math.PI * 2,
-      );
-      context.stroke();
-      context.setLineDash([]);
-      context.font = `${Math.max(20, projected.tileWidth * 0.22)}px system-ui`;
-      context.textAlign = 'center';
-      context.textBaseline = 'middle';
-      context.fillStyle = '#ffffff';
-      context.fillText('☝', projected.center.x + projected.tileWidth * 0.38, projected.center.y - projected.tileHeight * 0.72 + Math.sin(timestamp * 0.008) * 4);
-    }
-    context.restore();
-  }
-
-  #drawLeaks(projected: ProjectedTile, theme: Theme, timestamp: number): void {
-    const leaks = this.#analysis?.leaks.filter((leak) => leak.tileId === projected.tile.id) ?? [];
-    if (leaks.length === 0) {
-      return;
-    }
-    const mask = currentMask(projected.tile);
-    for (const leak of leaks) {
-      if ((mask & leak.direction) === 0) {
-        continue;
-      }
-      const worldVector = directionVector(leak.direction);
-      const screenVector = projectVector(worldVector.x, worldVector.y, this.#viewTurns * (Math.PI / 2), projected.tileWidth, projected.tileHeight);
-      const endpoint = {
-        x: projected.center.x + screenVector.x * 0.42,
-        y: projected.center.y + screenVector.y * 0.42,
-      };
-      const pulse = this.#reducedMotion ? 1 : 0.82 + Math.sin(timestamp * 0.009 + endpoint.x) * 0.18;
-      const context = this.#context;
-      const warning = this.#highContrast ? '#ffeb3b' : '#ff8b78';
-      context.save();
-      context.shadowColor = warning;
-      context.shadowBlur = projected.tileWidth * 0.18;
-      context.fillStyle = warning;
-      context.strokeStyle = withAlpha(warning, 0.8);
-      context.lineWidth = Math.max(1.4, projected.tileWidth * 0.018);
-      context.beginPath();
-      context.arc(endpoint.x, endpoint.y, Math.max(2.4, projected.tileWidth * 0.041 * pulse), 0, Math.PI * 2);
-      context.fill();
-      context.beginPath();
-      context.arc(endpoint.x, endpoint.y, Math.max(5, projected.tileWidth * 0.075 * pulse), 0, Math.PI * 2);
-      context.stroke();
-      context.restore();
-    }
-  }
-
-  #victoryProgress(timestamp: number): number {
-    if (this.#victoryStartedAt <= 0 || this.#victoryEndsAt <= this.#victoryStartedAt) {
-      return 0;
-    }
-    if (timestamp >= this.#victoryEndsAt) {
-      return 0;
-    }
-    return Math.min(1, Math.max(0, (timestamp - this.#victoryStartedAt) / (this.#victoryEndsAt - this.#victoryStartedAt)));
-  }
-
-  #drawCelebration(theme: Theme, timestamp: number): void {
-    const progress = this.#victoryProgress(timestamp);
-    if (progress <= 0) {
-      return;
-    }
-
-    const context = this.#context;
-    const eased = 1 - Math.pow(1 - progress, 3);
-    const fade = Math.sin(Math.min(1, progress) * Math.PI);
-    const centerX = this.#width / 2;
-    const centerY = this.#height * 0.5;
-    const radius = Math.max(this.#width, this.#height) * (0.12 + eased * 0.72);
-
+    const pulse = this.#reducedMotion ? 1 : 1 + Math.sin(timestamp * 0.009) * 0.08;
+    const radius = projected.tileWidth * 0.24 * pulse;
     context.save();
     context.globalCompositeOperation = 'screen';
-    const bloom = context.createRadialGradient(centerX, centerY, 0, centerX, centerY, radius);
-    bloom.addColorStop(0, withAlpha(theme.glow, 0.34 * fade));
-    bloom.addColorStop(0.35, withAlpha(theme.accent, 0.17 * fade));
-    bloom.addColorStop(1, 'rgba(255,255,255,0)');
-    context.fillStyle = bloom;
-    context.fillRect(0, 0, this.#width, this.#height);
+    context.strokeStyle = '#91fff0';
+    context.lineWidth = Math.max(2, projected.tileWidth * 0.017);
+    context.shadowColor = '#6dffee';
+    context.shadowBlur = this.#profile.pipeGlow * 1.5;
+    context.beginPath();
+    context.ellipse(projected.center.x, projected.center.y, radius, radius * 0.55, 0, 0, Math.PI * 2);
+    context.stroke();
+    context.restore();
+  }
 
-    if (!this.#reducedMotion) {
-      context.translate(centerX, centerY);
-      context.rotate(progress * 0.22);
-      for (let index = 0; index < 14; index += 1) {
-        context.rotate((Math.PI * 2) / 14);
-        const rayLength = radius * (0.52 + (index % 3) * 0.08);
-        const rayWidth = Math.max(1, this.#width * 0.0017);
-        const ray = context.createLinearGradient(0, 0, rayLength, 0);
-        ray.addColorStop(0, withAlpha(theme.glow, 0));
-        ray.addColorStop(0.3, withAlpha(theme.glow, 0.2 * fade));
-        ray.addColorStop(1, withAlpha(theme.glow, 0));
-        context.fillStyle = ray;
-        context.fillRect(0, -rayWidth / 2, rayLength, rayWidth);
-      }
+  #drawTileLeaks(projected: ProjectedTile, timestamp: number): void {
+    if (!this.#analysis) return;
+    const leaks = this.#analysis.leaks.filter((leak) => leak.tileId === projected.tile.id);
+    if (leaks.length === 0) return;
+    for (const leak of leaks) {
+      const [dx, dy] = DIRECTION_VECTOR[leak.direction];
+      const endpoint = this.#offsetPoint(projected, dx * 0.44, dy * 0.44);
+      this.#drawLeak(endpoint, projected.tileWidth, timestamp, hashSeed(`${projected.tile.id}:${leak.direction}`));
+    }
+  }
+
+  #drawLeak(endpoint: Point, tileWidth: number, timestamp: number, seed: number): void {
+    const context = this.#context;
+    const scale = Math.max(0.65, tileWidth / 130);
+    context.save();
+    context.globalCompositeOperation = 'screen';
+    context.strokeStyle = 'rgba(84, 239, 255, .75)';
+    context.lineWidth = 2.5 * scale;
+    context.shadowColor = '#55eaff';
+    context.shadowBlur = this.#profile.pipeGlow;
+    const phase = this.#reducedMotion ? 0 : Math.sin(timestamp * 0.007 + seed) * 3 * scale;
+    for (let index = 0; index < 3; index += 1) {
+      context.beginPath();
+      context.moveTo(endpoint.x + (index - 1) * 3 * scale, endpoint.y);
+      context.quadraticCurveTo(
+        endpoint.x + (index - 1) * 8 * scale + phase,
+        endpoint.y - (13 + index * 5) * scale,
+        endpoint.x + (index - 1) * 5 * scale - phase * 0.4,
+        endpoint.y - (25 + index * 7) * scale,
+      );
+      context.stroke();
     }
     context.restore();
 
+    const badgeX = endpoint.x + 13 * scale;
+    const badgeY = endpoint.y - 22 * scale;
     context.save();
-    context.strokeStyle = withAlpha(theme.accent, 0.56 * fade);
-    context.lineWidth = Math.max(1.5, this.#width * 0.002);
-    context.shadowColor = theme.glow;
-    context.shadowBlur = 18;
+    context.fillStyle = '#d8524b';
+    context.shadowColor = '#ff6860';
+    context.shadowBlur = 8 * scale;
     context.beginPath();
-    context.arc(centerX, centerY, Math.max(18, radius * 0.42), 0, Math.PI * 2);
+    context.arc(badgeX, badgeY, 9 * scale, 0, Math.PI * 2);
+    context.fill();
+    context.strokeStyle = '#fff3df';
+    context.lineWidth = 1.5 * scale;
     context.stroke();
+    context.fillStyle = '#fff';
+    context.font = `800 ${12 * scale}px system-ui`;
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillText('!', badgeX, badgeY + 0.6 * scale);
     context.restore();
+  }
+
+  #offsetPoint(projected: ProjectedTile, dx: number, dy: number): Point {
+    const offset = projectUnit(dx, dy, projected.cameraAngle, projected.verticalScale);
+    return { x: projected.center.x + offset.x * projected.unit, y: projected.center.y + offset.y * projected.unit };
+  }
+
+  #spawnBloomParticles(): void {
+    if (this.#reducedMotion) return;
+    for (const projected of this.#projectedTiles) {
+      if (projected.tile.kind !== 'plant') continue;
+      const [,, dark] = PLANT_COLORS[projected.tile.plantKind ?? 'lumen'];
+      const hue = colorHue(dark);
+      for (let index = 0; index < (this.#profile === PROFILES.low ? 8 : 20); index += 1) {
+        const angle = (Math.PI * 2 * index) / 20 + Math.random() * 0.45;
+        const speed = 30 + Math.random() * 78;
+        this.#particles.push({
+          x: projected.center.x,
+          y: projected.center.y - projected.tileWidth * 0.22,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed - 45,
+          life: 0.8 + Math.random() * 1.2,
+          maxLife: 1.8,
+          size: 2 + Math.random() * 4.5,
+          hue,
+          spin: Math.random() * Math.PI * 2,
+        });
+      }
+    }
   }
 
   #drawParticles(): void {
     const context = this.#context;
+    context.save();
+    context.globalCompositeOperation = 'screen';
     for (const particle of this.#particles) {
-      const alpha = Math.max(0, particle.life / particle.maxLife);
-      context.fillStyle = `hsla(${particle.hue}, 78%, 72%, ${alpha})`;
+      const alpha = clamp(particle.life / Math.max(0.001, particle.maxLife), 0, 1);
+      context.save();
+      context.translate(particle.x, particle.y);
+      context.rotate(particle.spin);
+      context.fillStyle = `hsla(${particle.hue}, 86%, 72%, ${alpha})`;
+      context.shadowColor = `hsla(${particle.hue}, 95%, 68%, ${alpha})`;
+      context.shadowBlur = this.#profile.pipeGlow * 0.55;
       context.beginPath();
-      context.arc(particle.x, particle.y, particle.size * alpha, 0, Math.PI * 2);
+      context.ellipse(0, 0, particle.size * 1.8, particle.size * 0.65, 0, 0, Math.PI * 2);
+      context.fill();
+      context.restore();
+    }
+    context.restore();
+  }
+
+  #drawCelebration(timestamp: number): void {
+    if (this.#victoryStartedAt <= 0 || timestamp > this.#victoryEndsAt) return;
+    const context = this.#context;
+    const duration = Math.max(1, this.#victoryEndsAt - this.#victoryStartedAt);
+    const progress = clamp((timestamp - this.#victoryStartedAt) / duration, 0, 1);
+    const envelope = Math.sin(progress * Math.PI);
+    const center = this.#projectedTiles.length > 0
+      ? this.#projectedTiles.reduce((sum, tile) => ({ x: sum.x + tile.center.x / this.#projectedTiles.length, y: sum.y + tile.center.y / this.#projectedTiles.length }), { x: 0, y: 0 })
+      : { x: this.#width / 2, y: this.#height / 2 };
+
+    context.save();
+    context.globalCompositeOperation = 'screen';
+    const glow = context.createRadialGradient(center.x, center.y, 0, center.x, center.y, Math.max(this.#width, this.#height) * 0.48);
+    glow.addColorStop(0, `rgba(190, 255, 234, ${0.24 * envelope})`);
+    glow.addColorStop(0.28, `rgba(89, 246, 213, ${0.12 * envelope})`);
+    glow.addColorStop(1, 'rgba(0,0,0,0)');
+    context.fillStyle = glow;
+    context.fillRect(0, 0, this.#width, this.#height);
+
+    if (!this.#reducedMotion) {
+      context.strokeStyle = `rgba(255, 226, 130, ${0.1 * envelope})`;
+      context.lineWidth = 2;
+      for (let index = 0; index < 18; index += 1) {
+        const angle = index * Math.PI * 2 / 18 + timestamp * 0.00008;
+        context.beginPath();
+        context.moveTo(center.x + Math.cos(angle) * 50, center.y + Math.sin(angle) * 28);
+        context.lineTo(center.x + Math.cos(angle) * this.#width * 0.7, center.y + Math.sin(angle) * this.#height * 0.7);
+        context.stroke();
+      }
+    }
+    context.restore();
+  }
+
+  #drawAmbientForeground(timestamp: number): void {
+    if (this.#profile === PROFILES.low) return;
+    const context = this.#context;
+    context.save();
+    const bottomMist = context.createLinearGradient(0, this.#height * 0.7, 0, this.#height);
+    bottomMist.addColorStop(0, 'rgba(5, 49, 42, 0)');
+    bottomMist.addColorStop(1, 'rgba(8, 64, 54, .18)');
+    context.fillStyle = bottomMist;
+    context.fillRect(0, this.#height * 0.65, this.#width, this.#height * 0.35);
+    if (!this.#reducedMotion) {
+      context.globalAlpha = 0.035;
+      context.fillStyle = '#8effdd';
+      const drift = Math.sin(timestamp * 0.00012) * this.#width * 0.05;
+      context.beginPath();
+      context.ellipse(this.#width * 0.38 + drift, this.#height * 0.82, this.#width * 0.38, this.#height * 0.08, 0, 0, Math.PI * 2);
       context.fill();
     }
-  }
-
-  #createPollen(): void {
-    const random = mulberry32(0x88ad13);
-    this.#pollen = Array.from({ length: 48 }, () => ({
-      x: random(),
-      y: random(),
-      speed: 0.006 + random() * 0.022,
-      phase: random() * Math.PI * 2,
-      size: 0.5 + random() * 1.6,
-    }));
+    context.restore();
   }
 }
 
-function projectIso(x: number, y: number, cos: number, sin: number, tileWidth: number, tileHeight: number): Point {
-  const rotatedX = x * cos - y * sin;
-  const rotatedY = x * sin + y * cos;
+function projectUnit(wx: number, wy: number, angle: number, verticalScale = 0.52): Point {
+  const cosine = Math.cos(angle);
+  const sine = Math.sin(angle);
   return {
-    x: (rotatedX - rotatedY) * tileWidth * 0.5,
-    y: (rotatedX + rotatedY) * tileHeight * 0.5,
+    x: wx * cosine - wy * sine,
+    y: (wx * sine + wy * cosine) * verticalScale,
   };
-}
-
-function projectVector(x: number, y: number, viewRotation: number, tileWidth: number, tileHeight: number): Point {
-  return projectIso(x, y, Math.cos(viewRotation), Math.sin(viewRotation), tileWidth, tileHeight);
-}
-
-function addOrigin(point: Point, originX: number, originY: number): Point {
-  return { x: point.x + originX, y: point.y + originY };
-}
-
-function pointBounds(points: readonly Point[]): { minX: number; maxX: number; minY: number; maxY: number } {
-  let minX = Number.POSITIVE_INFINITY;
-  let maxX = Number.NEGATIVE_INFINITY;
-  let minY = Number.POSITIVE_INFINITY;
-  let maxY = Number.NEGATIVE_INFINITY;
-  for (const point of points) {
-    minX = Math.min(minX, point.x);
-    maxX = Math.max(maxX, point.x);
-    minY = Math.min(minY, point.y);
-    maxY = Math.max(maxY, point.y);
-  }
-  return { minX, maxX, minY, maxY };
-}
-
-function fillPolygon(context: CanvasRenderingContext2D, points: readonly Point[], fill: string | CanvasGradient): void {
-  if (points.length === 0) {
-    return;
-  }
-  context.fillStyle = fill;
-  context.beginPath();
-  points.forEach((point, index) => (index === 0 ? context.moveTo(point.x, point.y) : context.lineTo(point.x, point.y)));
-  context.closePath();
-  context.fill();
 }
 
 function pointInPolygon(point: Point, polygon: readonly Point[]): boolean {
   let inside = false;
   for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index, index += 1) {
-    const currentPoint = polygon[index] as Point;
-    const previousPoint = polygon[previous] as Point;
-    const intersects =
-      currentPoint.y > point.y !== previousPoint.y > point.y &&
-      point.x <
-        ((previousPoint.x - currentPoint.x) * (point.y - currentPoint.y)) /
-          (previousPoint.y - currentPoint.y + Number.EPSILON) +
-          currentPoint.x;
-    if (intersects) {
-      inside = !inside;
-    }
+    const a = polygon[index] as Point;
+    const b = polygon[previous] as Point;
+    const intersect = ((a.y > point.y) !== (b.y > point.y)) &&
+      point.x < ((b.x - a.x) * (point.y - a.y)) / ((b.y - a.y) || Number.EPSILON) + a.x;
+    if (intersect) inside = !inside;
   }
   return inside;
 }
 
-function directionVectors(mask: number): Point[] {
-  const result: Point[] = [];
-  for (const direction of DIRECTIONS) {
-    if ((mask & direction.bit) !== 0) {
-      result.push({ x: direction.dx, y: direction.dy });
-    }
+function tracePolygon(context: CanvasRenderingContext2D, points: readonly Point[]): void {
+  context.beginPath();
+  points.forEach((point, index) => {
+    if (index === 0) context.moveTo(point.x, point.y); else context.lineTo(point.x, point.y);
+  });
+  context.closePath();
+}
+
+function drawImageCover(context: CanvasRenderingContext2D, image: HTMLImageElement, x: number, y: number, width: number, height: number): void {
+  const imageRatio = image.naturalWidth / image.naturalHeight;
+  const targetRatio = width / height;
+  let sourceX = 0;
+  let sourceY = 0;
+  let sourceWidth = image.naturalWidth;
+  let sourceHeight = image.naturalHeight;
+  if (imageRatio > targetRatio) {
+    sourceWidth = image.naturalHeight * targetRatio;
+    sourceX = (image.naturalWidth - sourceWidth) / 2;
+  } else {
+    sourceHeight = image.naturalWidth / targetRatio;
+    sourceY = (image.naturalHeight - sourceHeight) / 2;
   }
-  return result;
+  context.drawImage(image, sourceX, sourceY, sourceWidth, sourceHeight, x, y, width, height);
 }
 
-function directionVector(direction: DirectionBit): Point {
-  switch (direction) {
-    case Direction.North:
-      return { x: 0, y: -1 };
-    case Direction.East:
-      return { x: 1, y: 0 };
-    case Direction.South:
-      return { x: 0, y: 1 };
-    case Direction.West:
-      return { x: -1, y: 0 };
+function loadImage(source: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.decoding = 'async';
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error(`Unable to load ${source}`));
+    image.src = source;
+  });
+}
+
+function distance(left: Point, right: Point): number {
+  return Math.hypot(right.x - left.x, right.y - left.y);
+}
+
+function lerpPoint(from: Point, to: Point, amount: number): Point {
+  return { x: from.x + (to.x - from.x) * amount, y: from.y + (to.y - from.y) * amount };
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.max(minimum, Math.min(maximum, value));
+}
+
+function easeOutBack(value: number): number {
+  const c1 = 1.70158;
+  const c3 = c1 + 1;
+  return 1 + c3 * Math.pow(value - 1, 3) + c1 * Math.pow(value - 1, 2);
+}
+
+function drawStar(context: CanvasRenderingContext2D, points: number, outerRadius: number, innerRadius: number): void {
+  context.beginPath();
+  for (let index = 0; index < points * 2; index += 1) {
+    const radius = index % 2 === 0 ? outerRadius : innerRadius;
+    const angle = index * Math.PI / points - Math.PI / 2;
+    const x = Math.cos(angle) * radius;
+    const y = Math.sin(angle) * radius;
+    if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
   }
+  context.closePath();
 }
 
-function rotateVector(x: number, y: number, angle: number): Point {
-  const cos = Math.cos(angle);
-  const sin = Math.sin(angle);
-  return { x: x * cos - y * sin, y: x * sin + y * cos };
-}
-
-function withAlpha(hex: string, alpha: number): string {
-  if (!hex.startsWith('#') || (hex.length !== 7 && hex.length !== 4)) {
-    return hex;
-  }
-  const expanded = hex.length === 4 ? `#${hex[1]}${hex[1]}${hex[2]}${hex[2]}${hex[3]}${hex[3]}` : hex;
-  const red = Number.parseInt(expanded.slice(1, 3), 16);
-  const green = Number.parseInt(expanded.slice(3, 5), 16);
-  const blue = Number.parseInt(expanded.slice(5, 7), 16);
-  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
-}
-
-function lighten(hex: string, amount: number): string {
-  if (!hex.startsWith('#') || hex.length !== 7) {
-    return hex;
-  }
-  const parts = [1, 3, 5].map((start) => Math.min(255, Number.parseInt(hex.slice(start, start + 2), 16) + amount));
-  return `rgb(${parts[0]}, ${parts[1]}, ${parts[2]})`;
-}
-
-function plantColor(kind: string, index: number, powered: boolean, theme: Theme): string {
-  if (!powered) {
-    return index % 2 === 0 ? '#8b7b76' : '#716a6f';
-  }
-  const colors: Record<string, readonly string[]> = {
-    aster: ['#f0d2ff', '#cba8f4'],
-    orchid: ['#ffc4e5', '#e494c5'],
-    lotus: ['#ffd0df', '#fff0f2'],
-    fern: ['#b6f38f', '#72d67e'],
-    rose: ['#ffafaa', '#ffcec0'],
-  };
-  const palette = colors[kind] ?? [theme.accent, theme.glow];
-  return palette[index % palette.length] as string;
-}
-
-function mulberry32(initial: number): () => number {
-  let state = initial >>> 0;
-  return () => {
-    state += 0x6d2b79f5;
-    let value = state;
-    value = Math.imul(value ^ (value >>> 15), value | 1);
-    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
-    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
-  };
+function colorHue(color: string): number {
+  const red = Number.parseInt(color.slice(1, 3), 16) / 255;
+  const green = Number.parseInt(color.slice(3, 5), 16) / 255;
+  const blue = Number.parseInt(color.slice(5, 7), 16) / 255;
+  const maximum = Math.max(red, green, blue);
+  const minimum = Math.min(red, green, blue);
+  const delta = maximum - minimum;
+  if (delta === 0) return 45;
+  let hue = maximum === red ? ((green - blue) / delta) % 6 : maximum === green ? (blue - red) / delta + 2 : (red - green) / delta + 4;
+  hue = Math.round(hue * 60);
+  return hue < 0 ? hue + 360 : hue;
 }

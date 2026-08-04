@@ -1,88 +1,69 @@
-# Game Design: Clockwork Conservatory
+# Game Design — Clockwork Conservatory
 
-## High concept
+## Product promise
 
-A clockmaker-botanist left behind a glasshouse whose irrigation machinery has fallen out of alignment. The player rotates beautifully machined garden mechanisms until the Sunwell energizes every plant through one sealed network.
+A calm, premium spatial puzzle for adult casual players: rotate one mechanism at a time, watch a living current travel through a miniature conservatory, and restore every flower without leaving an active leak.
 
-The fantasy is not merely “connect the pipes.” Each move wakes a miniature mechanical garden: dark channels gain color, energy pulses travel through the network, gears turn, pollen drifts, flowers bloom, and the whole conservatory responds when the circuit becomes perfect.
+## Core loop
 
-## Audience and session shape
+1. Read the Sunwell source and the unlit network.
+2. Rotate brass mechanisms clockwise.
+3. Use immediate light, sound, bloom, and leak feedback to judge the result.
+4. Connect every plant and seal every powered open endpoint.
+5. Earn a one-to-three-star result based on moves, time, and hint use.
+6. Restore the next chamber, unlock a specimen, or return for the Daily Bloom.
 
-The game is aimed at adult casual puzzle players who value clarity, relaxation, mastery, and a daily ritual. A normal procedural level is intended to take roughly two to six minutes. There is no fail timer in the campaign, avoiding frustration while allowing score-focused players to optimize moves and completion time.
-
-## First-session experience
-
-The first three campaign levels are authored lessons rather than procedural boards. Each starts unsolved, highlights one adjustable mechanism, and completes with one clockwise turn.
-
-1. **Wake the first bloom** — distinguishes the Sunwell, an adjustable channel, and a plant. Leak warnings stay hidden so the player learns only flow and reward.
-2. **Seal the leak** — introduces the active red leak marker and teaches that a powered open channel must be aligned.
-3. **Read the whole circuit** — introduces a branch, two plants, and visible anchored mechanisms that cannot turn.
-
-Wrong tutorial selections do not consume moves. Keyboard focus starts on the glowing target, and localized coach text explains the current concept without requiring a separate help screen. Tutorial results do not train the adaptive skill profile, preventing assisted one-move lessons from causing an unfair difficulty jump.
-
-## Core rules
-
-1. Every active mechanism belongs to one hidden spanning network.
-2. Clicking a non-fixed mechanism rotates its connections clockwise.
-3. Power spreads only through mutually connected edges.
-4. Active red markers show energy escaping from the currently powered network; the HUD reports these active leaks instead of cluttering the board with every disconnected edge.
-5. The puzzle is complete when every mechanism and plant is powered and no connection leaks into empty space or a mismatched neighbor.
-
-Every generated level is validated by applying its target rotations and running the same board analyzer used during play. A generated level that is already solved or has no meaningful moves is rejected.
+The standard game is untimed in the sense that no countdown causes failure. Time only contributes to optional mastery scoring.
 
 ## Modes
 
-### Restoration Campaign
+### Campaign
 
-An endless chapter progression with themed environments. After the three guided lessons, difficulty grows gradually and is adjusted by the local Garden Director. The menu exposes completed circuits, progress through the current five-level chamber, and a collection of plant specimens unlocked at campaign milestones. An interstitial opportunity appears only after every third completed campaign level, before the next level starts.
+Three authored onboarding levels lead into deterministic, solver-verifiable generated boards. Each six-level group represents one conservatory chamber. Progress, stars, and specimens persist.
 
 ### Daily Bloom
 
-All players receive the same deterministic UTC puzzle for the day. Score is submitted automatically to an Arkadium leaderboard when supported. This creates a repeatable daily habit and makes leaderboard comparison meaningful.
+A UTC date seed creates one shared puzzle per day. The best local score, streak, and optional Arkadium leaderboard result provide a recurring ritual.
 
 ### Zen Garden
 
-A lower-pressure, untimed adaptive puzzle with a gentler configuration. It provides an accessible alternative for players who prefer relaxation over optimization.
+A fresh deterministic board is created for a relaxed session. There is no pressure to maintain a streak or beat a shared score.
 
-## Garden Director and hinting
+## Puzzle contract
 
-The adaptive system is intentionally local, fast, explainable, and privacy-preserving.
+- Active cells form a connected grid.
+- The solved circuit is a tree, so the solution has no powered leak.
+- Every plant is a leaf of the solved tree.
+- The Sunwell and selected anchored mechanisms are fixed.
+- The zero-rotation orientation is authoritative and validated by tests.
+- The starting orientation is guaranteed not to be solved.
+- Hints recommend a legal clockwise correction and never require a network service.
 
-A compact skill profile tracks exponentially weighted move efficiency, seconds per active tile, hint usage, successful-level streak, and completed procedural levels. After a non-tutorial completion, these signals update a bounded rating. The next campaign puzzle maps rating plus progression to board dimensions, active-cell count, plant count, fixed-piece probability, and pre-solved probability.
+## Difficulty
 
-The hint engine tests legal rotations and scores their effect on powered plants, powered tiles, and leaks. It prefers an immediately useful move. When no greedy improvement exists, it identifies a frontier or target-orientation correction, so the hint does not invent an impossible action.
+Difficulty grows through board dimensions, holes, active-cell count, anchored mechanisms, and required rotations. It does not change during a level and is never coupled to monetization. Dense mobile layouts switch projection rather than shrinking targets below a useful size.
 
-Player-facing copy calls this feature **Garden Hint**. The technology label is intentionally kept out of the core button because the value is a fair, useful action—not the fact that an algorithm computed it. The response is normally available in milliseconds, with a visible thinking state for slow devices and accessibility.
+## Retention
 
-## Reward and visual payoff
+- Visible chamber progress and total restoration.
+- Five specimen unlocks.
+- Daily seed, streak, best score, and optional leaderboard.
+- Campaign stars and cumulative score.
+- Short natural sessions with a clear next-level action.
 
-The solved state is a staged game event:
+## Monetization boundaries
 
-1. the final rotation settles and the full network becomes energized;
-2. moving energy pulses traverse powered channels;
-3. plants open and particles burst from their positions;
-4. a radial conservatory glow and light rays emphasize the restored board;
-5. the result card enters with stars, score, moves, time, daily status, and any newly collected specimen.
+- Interstitials occur only after completed campaign groups.
+- Three hints are free per level.
+- Additional hints may use a player-initiated rewarded ad.
+- Missing, failed, or cancelled rewarded ads grant nothing in production.
+- Difficulty does not manufacture failure before an ad or purchase prompt.
 
-Reduced-motion mode keeps the state change and result information but shortens camera/ray movement.
+## Accessibility and comfort
 
-## Retention loop
-
-- **Immediate:** rotate, see flow, hear/see feedback, remove active leaks.
-- **Level:** trigger the full restoration sequence and earn score/stars.
-- **Session:** advance a five-level chamber and reveal the next specimen milestone.
-- **Daily:** solve the shared puzzle and compare score.
-- **Long term:** complete chapters, build the specimen collection, improve mastery, and encounter denser networks and new visual themes.
-
-## Monetization principles
-
-- Never interrupt an active puzzle with an ad.
-- Interstitials occur only between completed campaign groups.
-- After three free hints, a rewarded ad can grant one additional optional hint.
-- Rewarded failure, cancellation, or missing SDK support grants nothing; only an explicit local debug flag can simulate success.
-- Arena banners and prerolls remain controlled by Arkadium.
-- No paywall, dark pattern, external purchase flow, or child-oriented economy.
-
-## Future production expansion
-
-The current release candidate contains onboarding, procedural campaign, a lightweight restoration track, specimen milestones, Daily Bloom, Zen, adaptive difficulty, and the complete victory payoff. A post-acceptance content pass can deepen—not replace—this foundation with fully illustrated restoration rooms, additional mechanism families, seasonal daily modifiers, achievements, daily streak rewards, Arkadium-approved cosmetics, and authored challenge chapters.
+- Touch, mouse, and keyboard support.
+- DOM-based menus, controls, settings, tutorial copy, completion copy, and live announcements around the canvas.
+- Clear non-color indicators for selection, fixed pieces, leaks, and tutorial targets.
+- Reduced-motion and high-contrast modes.
+- Auto/high/balanced/low rendering profiles.
+- English required; Spanish, French, German, and Italian tables included for review.

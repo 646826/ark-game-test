@@ -1,78 +1,52 @@
-import { cp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { spawn } from 'node:child_process';
-import { dirname, join, relative, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { basename, extname, join, resolve } from 'node:path';
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const output = join(root, 'dist');
+const root = resolve(import.meta.dirname, '..');
+const dist = join(root, 'dist');
+rmSync(dist, { recursive: true, force: true });
+mkdirSync(join(dist, 'src'), { recursive: true });
 
-await rm(output, { recursive: true, force: true });
-await mkdir(output, { recursive: true });
-await run('tsc', ['-p', 'tsconfig.json'], root);
-await cp(join(root, 'public'), output, { recursive: true });
-await cp(join(root, 'index.html'), join(output, 'index.html'));
-await cp(join(root, 'src', 'styles.css'), join(output, 'src', 'styles.css'));
+const localTsc = join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'tsc.cmd' : 'tsc');
+execFileSync(existsSync(localTsc) ? localTsc : 'tsc', ['-p', join(root, 'tsconfig.json')], { cwd: root, stdio: 'inherit' });
+cpSync(join(root, 'index.html'), join(dist, 'index.html'));
+cpSync(join(root, 'src', 'styles.css'), join(dist, 'src', 'styles.css'));
+cpSync(join(root, 'public'), dist, { recursive: true });
 
-const packageJson = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
-const report = await buildReport(output, packageJson.version);
-await writeFile(join(output, 'build-report.json'), `${JSON.stringify(report, null, 2)}\n`);
+const files = walk(dist);
+const totalBytes = files.reduce((sum, file) => sum + statSync(file).size, 0);
+// The renderer preloads every packaged scene during initialization, and native ES
+// modules load the complete dependency graph. Count every runtime file except maps
+// and the build report rather than reporting only the entry module.
+const initialBytes = files
+  .filter((file) => {
+    const relative = file.slice(dist.length + 1).replaceAll('\\', '/');
+    if (extname(file) === '.map' || basename(file) === 'build-report.json') return false;
+    return relative === 'index.html'
+      || relative === 'favicon.svg'
+      || relative === 'manifest.webmanifest'
+      || relative === 'assets/atrium-desktop.webp'
+      || relative === 'src/styles.css'
+      || (relative.startsWith('src/') && relative.endsWith('.js'));
+  })
+  .reduce((sum, file) => sum + statSync(file).size, 0);
+const report = {
+  version: JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version,
+  generatedAt: new Date().toISOString(),
+  initialBytes,
+  totalBytes,
+  initialMegabytes: Number((initialBytes / 1024 / 1024).toFixed(3)),
+  totalMegabytes: Number((totalBytes / 1024 / 1024).toFixed(3)),
+  files: files.map((file) => ({ path: file.slice(dist.length + 1), bytes: statSync(file).size })),
+};
+writeFileSync(join(dist, 'build-report.json'), `${JSON.stringify(report, null, 2)}\n`);
+if (initialBytes > 15 * 1024 * 1024) throw new Error(`Initial package exceeds Arkadium's 15 MB budget: ${report.initialMegabytes} MB`);
+if (totalBytes > 100 * 1024 * 1024) throw new Error(`Total package exceeds Arkadium's 100 MB budget: ${report.totalMegabytes} MB`);
+console.log(`Built v${report.version}: ${report.initialMegabytes} MB initial / ${report.totalMegabytes} MB total.`);
 
-const initialBytes = report.files
-  .filter((file) => /(?:index\.html|\.css|\.js)$/.test(file.path) && !file.path.endsWith('.map'))
-  .reduce((sum, file) => sum + file.bytes, 0);
-
-if (initialBytes >= 15 * 1024 * 1024) {
-  throw new Error(`Initial payload exceeds 15 MB: ${formatBytes(initialBytes)}`);
-}
-if (report.totalBytes >= 100 * 1024 * 1024) {
-  throw new Error(`Total build exceeds 100 MB: ${formatBytes(report.totalBytes)}`);
-}
-
-console.log(`Built Clockwork Conservatory ${report.version}`);
-console.log(`Initial payload: ${formatBytes(initialBytes)} / 15 MB`);
-console.log(`Total build: ${formatBytes(report.totalBytes)} / 100 MB`);
-
-async function buildReport(directory, version) {
-  const files = [];
-  await walk(directory, async (path) => {
-    const info = await stat(path);
-    files.push({ path: relative(directory, path).replaceAll('\\', '/'), bytes: info.size });
-  });
-  files.sort((a, b) => a.path.localeCompare(b.path));
-  return {
-    name: 'Clockwork Conservatory',
-    version,
-    generatedAt: new Date().toISOString(),
-    totalBytes: files.reduce((sum, file) => sum + file.bytes, 0),
-    files,
-  };
-}
-
-async function walk(directory, visitor) {
-  const { readdir } = await import('node:fs/promises');
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
+function walk(directory) {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = join(directory, entry.name);
-    if (entry.isDirectory()) {
-      await walk(path, visitor);
-    } else if (entry.isFile()) {
-      await visitor(path);
-    }
-  }
-}
-
-function run(command, args, cwd) {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, { cwd, stdio: 'inherit', shell: process.platform === 'win32' });
-    child.once('error', reject);
-    child.once('exit', (code) => {
-      if (code === 0) resolvePromise();
-      else reject(new Error(`${command} exited with code ${code ?? 'unknown'}`));
-    });
+    return entry.isDirectory() ? walk(path) : [path];
   });
-}
-
-function formatBytes(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
 }

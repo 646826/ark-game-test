@@ -1,55 +1,57 @@
-# Arkadium Integration and Technical Checklist
+# Arkadium Integration Checklist — 0.3.0
 
-This checklist maps the current implementation to the public Arkadium Game SDK and technical requirements. Final acceptance still requires testing in Arkadium's Sandbox and review by an Arkadium producer.
+Status meanings:
 
-## SDK and platform integration
+- **Pass locally** — implementation plus automated/local evidence exists.
+- **Needs Sandbox** — requires the Arkadium-hosted Sandbox or producer configuration.
+- **Needs manual QA** — cannot be completed credibly by automation alone.
 
-| Requirement | Implementation | Status |
+## SDK and integration
+
+| Requirement | Implementation and evidence | Status |
 |---|---|---|
-| Official Game SDK | Dynamically loads SDK v2 from Arkadium CDN; 1.8 s non-blocking fallback; ordered lifecycle outbox replays after late connection | Implemented |
-| Ready signal | Calls `lifecycle.onTestReady()` after menu is interactive; queues it if the SDK is still late | Implemented |
-| Game start | Calls `onGameStart()` once on first gameplay start per page load | Implemented |
-| Score change | Calls `onChangeScore()` on level completion | Implemented |
-| Level lifecycle | Calls `onLevelStart()` and `onLevelEnd()` | Implemented |
-| Game end | Calls `onGameEnd()` once when the session page is left | Implemented; validate unload behavior in Sandbox |
-| Arena pause/resume | Registers `GAME_PAUSE` and `GAME_RESUME`; freezes timer/render/audio | Implemented |
-| Persistence | SDK local storage; remote storage for authorized users; local fallback outside Arena | Implemented |
-| Ads | Interstitial at a natural break; player-triggered rewarded hint; missing/cancelled/failed rewarded API grants nothing | Implemented |
-| Analytics | Standard events/page views/errors; successful round reason is `Completed`; release provider reads `arkadium-app-insights-id` from HTML | Implemented; production app ID required |
-| Leaderboard | Daily score posted only when service is supported | Implemented |
-| External ecosystem | No redirect, external login, fullscreen, clipboard, or external save service | Pass |
+| Official Game SDK v2 | Loads the documented CDN SDK and uses `ArkadiumGameSDK.getInstance()` | Pass locally; Needs Sandbox |
+| `onTestReady` | Sent after title art, save, settings, and menu are interactive; queued if connection is late | Pass locally; mocked smoke |
+| One game start per load | Bridge de-duplicates `onGameStart`; sent when the first mode starts | Pass locally; mocked smoke |
+| Score updates | `onChangeScore` sent with completion score before the session concludes | Pass locally; mocked smoke |
+| Level lifecycle | `onLevelStart(level)` and `onLevelEnd(level)` preserve order through a bounded outbox | Pass locally; mocked smoke |
+| One game end per load | De-duplicated `onGameEnd` on `pagehide` | Pass locally; Needs Sandbox unload check |
+| Host pause/resume | Registers `GAME_PAUSE` and `GAME_RESUME`, freezes timer/renderer/audio | Pass locally; mocked callback check; Needs Sandbox |
+| Persistence | SDK local storage; authenticated remote storage; local fallback outside Arena | Pass locally; Needs authenticated Sandbox |
+| No outside ecosystem | No redirect, external login, clipboard, fullscreen, or external save system | Pass locally |
+| Ads | Natural interstitial groups; optional player-triggered rewarded hints; fail-closed rewards | Pass locally; Needs Sandbox |
+| Analytics | Standard page/game/round events, custom puzzle dimensions, errors, optional App Insights ID | Implemented; production ID required |
+| Leaderboard | Daily score posts only when the service reports support | Implemented; configuration required |
 
 ## Technical requirements
 
-| Area | Implementation / evidence | Status |
+| Area | Current evidence | Status |
 |---|---|---|
-| Standards-based web game | TypeScript/JavaScript, Canvas 2D, Web Audio, DOM, ResizeObserver | Pass |
-| Initial package under 15 MB | Build report measures 202.6 KB uncompressed | Pass |
-| Total package under 100 MB | Build report measures 377.1 KB including maps/report | Pass |
-| Saved game under 500 KB | Typical save under 2 KB; explicit serialized-size tests | Pass |
-| Interaction within 5 seconds | No art/network preload; menu renders from local code; SDK is non-blocking | Pass locally; validate hosted URL |
-| Smooth gameplay | One Canvas animation loop; DPR capped at 2; no image decoding or runtime allocation spikes | Pass locally; device matrix required |
-| Remote dependency failure | SDK timeout and standalone continuation; gameplay/hints need no remote service | Pass |
-| AI latency | Local computation plus visible thinking UI; tested on 100 generated levels; player-facing label is Garden Hint | Pass |
-| Responsive 2:1 to 1:2 | CSS/canvas resize continuously; automated desktop, portrait, and 2:1 landscape smoke screenshots | Pass locally |
-| State preserved on resize | Board model is independent of renderer geometry | Pass |
-| Touch and mouse | Pointer events and large controls | Pass |
-| Keyboard | Direction selection, rotate, undo, hint, view, sound, restart, pause | Pass |
-| Accessibility | Semantic buttons/dialog, focus handling, live region, canvas narration, contrast/motion options | Partial WCAG AA review still required |
-| Audio after interaction | AudioContext unlocks only after pointer interaction | Pass |
-| Audio hidden/minimized | Visibility pause suspends audio and restores it on resume | Pass |
-| English | Complete | Pass |
-| FR/IT/DE/ES | Included | Implemented; native-speaker review required |
-| E for Everyone | Botanical nonviolent theme and neutral language | Pass by design; producer determines rating |
-| No engine logo/fullscreen | No engine splash or fullscreen API | Pass |
-| Public version number | `0.2.0` visible on title screen and in build report | Pass |
+| Standards-compliant web APIs | TypeScript/JavaScript, Canvas 2D, Web Audio, DOM, ResizeObserver | Pass locally |
+| Save below 500 KB | Automated assertion; typical value is far below 32 KB | Pass locally |
+| Initial below 15 MB | Build report currently about 0.30 MB | Pass locally |
+| Total below 100 MB | Build report currently about 0.63 MB including maps and optional art | Pass locally |
+| Interaction within 5 seconds | Only title art blocks the ready state; all other scene art is lazy | Pass locally; hosted cold-load measurement needed |
+| Smooth gameplay | DPR cap, adaptive profiles, bounded particles, single animation loop | Pass locally; real-device FPS needed |
+| One-hour stability | No unbounded gameplay queues; particles and lifecycle outbox bounded | Needs manual one-hour soak |
+| Remote failure | Core game, generation, hints, saves fallback, and renderer work without remote services | Pass locally |
+| Responsive 2:1 through 1:2 | Automated 1440×900 and 390×844 plus continuous resize architecture | Pass locally; complete matrix required |
+| State survives resize | Geometry is renderer-only; puzzle state is independent | Pass locally |
+| Clear density-aware visuals | DPR-aware canvas; isometric and dense-portrait compositions | Pass locally |
+| Touch, mouse, keyboard | Pointer hit testing, DOM buttons, arrows/Enter and shortcuts | Pass locally; real touch device needed |
+| Audio gating and focus | No audio before gesture; suspend on hidden/blur/host pause | Pass locally; mobile browser check needed |
+| English | Complete | Pass locally |
+| FR/IT/DE/ES | UI tables included | Needs native-speaker review |
+| E-for-Everyone content | Nonviolent botanical theme and neutral copy | Pass by design; producer confirms |
+| Visible version | Menu footer and build report show 0.3.0 | Pass locally |
 
-## Required before submission
+## Before submission
 
-- Deploy `dist/` to a stable HTTPS URL.
-- Run the public URL through the Arkadium Sandbox and confirm every lifecycle status indicator, including an artificially delayed SDK load.
-- Test authorized and anonymous persistence, remote save migration, leaderboard, ad success/cancel/error, and Arena pause/resume.
-- Obtain and configure the Arkadium production App Insights app ID; do not use the console provider in release.
-- Confirm interstitial cadence, completion analytics taxonomy, and rewarded-ad behavior with the producer.
-- Complete browser/device QA, native localization review, accessibility audit, and at least a one-hour soak test.
-- Produce store art, gameplay screenshots/video, instructions, privacy disclosure, and submission copy after the producer confirms required dimensions.
+- Deploy the exact `dist/` artifact to stable HTTPS.
+- Run all Sandbox status indicators and event logs from a refreshed Sandbox page.
+- Test anonymous and authenticated persistence, including login transitions.
+- Test subscriber/ad-free behavior, interstitial success/failure, rewarded success/failure/cancel.
+- Confirm App Insights ID, analytics taxonomy, leaderboard ID, slug, and ad cadence.
+- Complete the device/browser/aspect matrix and one-hour soak in `QA_PLAN.md`.
+- Obtain native review of non-English strings.
+- Review generated-asset provenance and commercial terms with the producer.

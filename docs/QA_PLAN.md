@@ -1,94 +1,94 @@
-# Production QA Plan
+# QA Plan — Clockwork Conservatory 0.3.0
 
-## Automated gate
+## Automated release gate
 
-`npm run ci` must pass on every pull request and main-branch commit.
+Run from a clean checkout:
 
-- Strict TypeScript compilation.
-- Static checks for expected Arkadium lifecycle, persistence, and ad calls.
-- Release guards against fullscreen, redirects, dynamic code execution, the obsolete solved-round reason, and permissive rewarded fallback.
-- Determinism and solver verification across 240 generated campaign, Daily, and Zen puzzles.
-- Verification that all three authored onboarding boards start unsolved, target an adjustable mechanism, require one clockwise move, power every plant, and finish with zero leaks.
-- Garden Hint validity across 100 generated puzzles.
-- Save-schema sanitization and size checks.
-- Scoring behavior checks.
-- Build-budget enforcement.
+```bash
+npm install
+npm run ci
+npm run smoke
+```
 
-`npm run smoke` boots the production JavaScript in Chromium and now covers:
+Expected evidence:
 
-- menu, guided desktop, guided portrait mobile, dense portrait Daily, and 2:1 landscape layouts;
-- page errors, canvas presence, and horizontal overflow;
-- a real one-click tutorial completion;
-- the in-board victory sequence and result card;
-- first specimen unlock feedback and clean removal of the completed active-run save;
-- late Arkadium SDK availability after standalone timeout, asserting replay order `onTestReady → onGameStart → onLevelStart`.
+- strict TypeScript and safety checks pass;
+- 234 generated puzzle cases and all tutorials pass;
+- corrupted saves are sanitized;
+- build budgets pass;
+- desktop/mobile menu, tutorial gameplay, victory, and dense Daily layout screenshots are created;
+- mocked `onTestReady`, game start, level start/end, score change, and pause/resume registration pass.
 
-## Manual gameplay matrix
+## Functional matrix
 
-### First-session onboarding
+- Campaign levels 1–3: guided target, wrong-target rejection, keyboard target, solve, stars, next.
+- Generated campaign: rotate, powered flow, plants, leaks, fixed tile rejection, undo, restart, resume.
+- Daily: deterministic date seed, replay, best score, streak, leaderboard supported/unsupported.
+- Zen: fresh seed, completion, replay, return to menu.
+- Hint: three free hints; rewarded success, fail, cancel, missing API, interrupted ad.
+- Progress: specimen unlocks at configured levels; score/stars/chamber progress; map locked/current/complete states.
+- No-content boundary: verify behavior before shipping a finite authored campaign cap.
 
-- Fresh profile receives authored levels 1, 2, and 3 in order.
-- Each level can be understood and solved without opening Help.
-- Wrong pointer and keyboard selections do not consume a move and return focus to the glowing target.
-- Level 1 has no leak/anchor visual noise; level 2 introduces the active leak marker; level 3 introduces anchored pieces.
-- First successful bloom should occur within 15–25 seconds for a new test player.
-- Closing the page after the solved state is saved but before the result card must resume directly into completion, not an already-solved interactive board.
+## Persistence matrix
 
-### Core flow
+- Standalone local first run, reload, corruption recovery, storage quota failure.
+- Arena anonymous local storage.
+- Arena authenticated remote storage.
+- Login transition after local progress exists.
+- Slow SDK connection while the player starts a game.
+- Page hidden or closed during play and during the victory flourish.
+- Confirm serialized value remains below 32 KB and aggregate game save below 500 KB.
 
-- New campaign, continue saved campaign, restart, undo, pause, return to menu, and next level.
-- Complete boards with one, two, and three stars.
-- Restoration counter, five-level chamber bar, specimen locked/unlocked labels, and milestone message.
-- Daily replay and best-score update.
-- Zen new-board loop.
-- All three free Garden Hints; rewarded success, cancel, SDK error, API unavailable, and explicit local debug simulation.
-- Interstitial trigger after campaign levels 3, 6, and 9 only.
+## Display matrix
 
-### Input
+Test without reloading while a level, tutorial, hint, victory, pause, and modal are active.
 
-- Mouse, touch, trackpad, keyboard-only, and screen-reader-assisted keyboard.
-- Rapid repeated tile input, resize during rotation/victory animation, and rotate view during hint state.
-- Browser back/forward and iframe focus changes must not create duplicate moves.
+| Class | Examples |
+|---|---|
+| Wide landscape | 1920×960, 1440×720, 1024×512 |
+| Standard landscape | 1440×900, 1280×800, 1024×768 |
+| Square | 900×900, 600×600 |
+| Portrait | 430×932, 390×844, 375×812 |
+| Extreme portrait | 512×1024, 360×720 |
+| Density | DPR 1, 1.25, 1.5, 2, 3 with renderer cap |
 
-### Display sizes
+Check clipping, readability, 44-pixel-equivalent targets where practical, board hit testing, projection switch, safe areas, state preservation, and animation destinations.
 
-At minimum: 1920×1080, 1366×768, 1024×768, 844×390, 390×844, 320×640, and embedded 2:1 / 1:2 extremes. Check coach card, HUD, board, toolbar, completion card, dialogs, readable text, and non-blurry canvas. Dense active-leak markers must remain informative rather than dominate the board.
+## Browser and device matrix
 
-### SDK Sandbox
+- Current Chrome and Edge on Windows.
+- Current Chrome and Safari on macOS.
+- Current Safari on iPhone and iPad.
+- Current Chrome on representative low-, mid-, and high-tier Android devices.
+- Firefox desktop where supported by the distribution target.
+- Mouse, trackpad, touch, coarse pointer, and keyboard-only paths.
 
-- Status indicators for every mandatory lifecycle event.
-- Repeat lifecycle validation with artificial SDK delay longer than 1.8 seconds.
-- Anonymous local save and authorized remote save.
-- Mock-user toggle during separate fresh Sandbox loads.
-- Pause/resume controls while timer, renderer, victory sequence, and audio are active.
-- Interstitial and rewarded ad success/cancel/error/unavailable states; no reward on failure.
-- Leaderboard supported/unsupported states.
-- Game display-setting combinations.
-- Confirm completion analytics taxonomy and App Insights dimensions with the assigned producer.
+## Performance and endurance
 
-### Browser/device matrix
+- Cold and warm load over realistic broadband and throttled mobile profiles.
+- Time to `onTestReady` and first input.
+- FPS during large boards, repeated rotations, leak effects, and victory.
+- Quality auto/high/balanced/low behavior.
+- Memory at 1 minute, 15 minutes, and 60 minutes.
+- Fifty sequential level transitions without reload.
+- Background/foreground cycles, minimized mobile browser, screen lock, and host pause.
+- No accumulating particles, timers, listeners, audio nodes, or lifecycle messages.
 
-Current Chrome, Edge, Firefox, and Safari desktop; current iOS Safari and Android Chrome; at least one lower-memory mobile device. Validate first interaction under five seconds on a normal mobile network and at least 30 FPS during dense 8×8 play and the victory sequence.
+## Accessibility and comfort
 
-### Reliability and soak
+- Full menu/settings/help/game/completion path by keyboard.
+- Visible focus and meaningful button labels.
+- Canvas accessible label and live status announcements.
+- High contrast without relying only on hue.
+- Reduced motion removes camera interpolation, ambient drift, and particle celebration.
+- Browser zoom and OS text scaling.
+- Screen-reader spot checks in menu, tutorial, controls, settings, pause, and completion.
+- No essential instructions embedded only in the background art.
 
-- One-hour continuous play with periodic resize, pause, settings, mode changes, ads, and menu transitions.
-- Observe heap, DOM node count, RAF count, event listener count, and audio nodes for unbounded growth.
-- Offline launch after static assets are cached; SDK unreachable; delayed SDK; ad error; persistence exception.
-- Corrupt, truncated, and oversized save values restore safe defaults without blocking play.
+## Content and release
 
-### Playtest metrics
-
-Run at least 10–20 first-time sessions and capture:
-
-- time to first correct rotation and first bloom;
-- percentage completing all three guided lessons;
-- percentage starting procedural level 4;
-- wrong-tile attempts per tutorial level;
-- Help opens before first completion;
-- second-level and next-day return intent;
-- qualitative understanding of Sunwell, active leak, anchored tile, and win condition.
-
-## Release exit criteria
-
-No blocker or critical defects, no reproducible crash, no lifecycle validation failure, no rewarded grant on failure, no data-loss defect, no inaccessible core action, and no supported viewport with clipped gameplay. High-severity defects require producer-approved disposition before submission.
+- English editorial pass and native ES/FR/DE/IT review.
+- No offensive, trademark-confusing, or external-navigation copy.
+- Confirm asset provenance and retention of generation records.
+- HTTPS, MIME types, cache headers, source-map policy, rollback, and version display.
+- Fresh Arkadium Sandbox page for each candidate URL.

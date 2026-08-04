@@ -1,51 +1,32 @@
-export const Direction = {
-  North: 1,
-  East: 2,
-  South: 4,
-  West: 8,
-} as const;
+export const NORTH = 1 as const;
+export const EAST = 2 as const;
+export const SOUTH = 4 as const;
+export const WEST = 8 as const;
+export type DirectionBit = typeof NORTH | typeof EAST | typeof SOUTH | typeof WEST;
+export const DIRECTIONS = [NORTH, EAST, SOUTH, WEST] as const;
 
-export type DirectionBit = (typeof Direction)[keyof typeof Direction];
 export type GameMode = 'campaign' | 'daily' | 'zen';
-export type TileKind = 'source' | 'path' | 'plant';
-export type PlantKind = 'aster' | 'orchid' | 'lotus' | 'fern' | 'rose';
-
-export interface DirectionDefinition {
-  readonly bit: DirectionBit;
-  readonly opposite: DirectionBit;
-  readonly dx: number;
-  readonly dy: number;
-  readonly name: 'north' | 'east' | 'south' | 'west';
-}
-
-export const DIRECTIONS: readonly DirectionDefinition[] = [
-  { bit: Direction.North, opposite: Direction.South, dx: 0, dy: -1, name: 'north' },
-  { bit: Direction.East, opposite: Direction.West, dx: 1, dy: 0, name: 'east' },
-  { bit: Direction.South, opposite: Direction.North, dx: 0, dy: 1, name: 'south' },
-  { bit: Direction.West, opposite: Direction.East, dx: -1, dy: 0, name: 'west' },
-] as const;
+export type TileKind = 'source' | 'gear' | 'plant';
+export type PlantKind = 'lumen' | 'orchid' | 'starbell' | 'ember' | 'moonfern';
+export type QualityMode = 'auto' | 'high' | 'balanced' | 'low';
+export type SupportedLanguage = 'en' | 'es' | 'fr' | 'de' | 'it';
 
 export interface DifficultyConfig {
-  readonly tier: number;
-  readonly cols: number;
-  readonly rows: number;
-  readonly activeCells: number;
-  readonly minPlants: number;
-  readonly maxPlants: number;
-  readonly preSolvedChance: number;
-  readonly fixedChance: number;
+  readonly width: number;
+  readonly height: number;
+  readonly holes: number;
+  readonly fixedRatio: number;
+  readonly tier: 'Seedling' | 'Gardener' | 'Botanist' | 'Conservator';
 }
 
 export interface TileState {
   readonly id: string;
   readonly x: number;
   readonly y: number;
-  readonly kind: TileKind;
   readonly baseMask: number;
-  readonly solutionMask: number;
-  readonly targetRotation: number;
-  readonly fixed: boolean;
+  readonly kind: TileKind;
   readonly plantKind?: PlantKind;
+  readonly fixed: boolean;
   rotation: number;
   visualTurns: number;
 }
@@ -54,11 +35,18 @@ export interface PuzzleDefinition {
   readonly seed: string;
   readonly mode: GameMode;
   readonly level: number;
-  readonly config: DifficultyConfig;
+  readonly width: number;
+  readonly height: number;
   readonly tiles: TileState[];
   readonly sourceId: string;
-  readonly optimalMoves: number;
-  readonly generatedAtVersion: number;
+  readonly config: DifficultyConfig;
+  readonly parMoves: number;
+  readonly tutorial?: 1 | 2 | 3;
+}
+
+export interface Leak {
+  readonly tileId: string;
+  readonly direction: DirectionBit;
 }
 
 export interface BoardAnalysis {
@@ -69,63 +57,48 @@ export interface BoardAnalysis {
   readonly solved: boolean;
 }
 
-export interface Leak {
-  readonly tileId: string;
-  readonly direction: DirectionBit;
-}
-
 export interface HintSuggestion {
   readonly tileId: string;
   readonly rotations: number;
-  readonly projectedScore: number;
-  readonly reason: 'immediate-improvement' | 'frontier-correction' | 'solution-correction';
-}
-
-export interface SkillProfile {
-  rating: number;
-  emaEfficiency: number;
-  emaSecondsPerTile: number;
-  hintRate: number;
-  streak: number;
-  completed: number;
-}
-
-export interface GameSettings {
-  sound: boolean;
-  reducedMotion: boolean;
-  highContrast: boolean;
-  language: SupportedLanguage;
-}
-
-export type SupportedLanguage = 'en' | 'es' | 'fr' | 'de' | 'it';
-
-export interface ActiveRunSnapshot {
-  readonly mode: GameMode;
-  readonly level: number;
-  readonly seed: string;
-  readonly config: DifficultyConfig;
-  readonly rotations: readonly number[];
-  readonly moves: number;
-  readonly hintsUsed: number;
-  readonly elapsedMs: number;
-  readonly score: number;
-}
-
-export interface PersistedProgress {
-  readonly schemaVersion: 1;
-  campaignLevel: number;
-  totalScore: number;
-  bestDaily: Record<string, number>;
-  skill: SkillProfile;
-  settings: GameSettings;
-  activeRun?: ActiveRunSnapshot;
+  readonly reason: 'Reconnect' | 'Seal_Leak' | 'Bloom_Path';
 }
 
 export interface CompletionStats {
-  readonly moves: number;
-  readonly optimalMoves: number;
-  readonly hintsUsed: number;
-  readonly elapsedMs: number;
   readonly score: number;
   readonly stars: 1 | 2 | 3;
+  readonly moves: number;
+  readonly elapsedMs: number;
+  readonly parMoves: number;
+}
+
+export interface GameSettings {
+  language: SupportedLanguage;
+  sound: boolean;
+  reducedMotion: boolean;
+  highContrast: boolean;
+  quality: QualityMode;
+  tutorialHints: boolean;
+}
+
+export interface ActiveRunSnapshot {
+  readonly seed: string;
+  readonly mode: GameMode;
+  readonly level: number;
+  readonly rotations: number[];
+  readonly moves: number;
+  readonly elapsedMs: number;
+}
+
+export interface PersistedProgress {
+  version: 3;
+  campaignLevel: number;
+  totalScore: number;
+  totalStars: number;
+  completedLevels: number;
+  streak: number;
+  lastDailyDate?: string;
+  bestDaily: Record<string, number>;
+  unlockedSpecimens: PlantKind[];
+  settings: GameSettings;
+  activeRun?: ActiveRunSnapshot;
 }

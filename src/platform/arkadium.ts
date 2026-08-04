@@ -1,61 +1,57 @@
 import type { PersistedProgress } from '../core/types.js';
 
 const SDK_URL = 'https://developers.arkadium.com/cdn/sdk/v2/sdk.js';
+const OUTBOX_LIMIT = 96;
 
 type UnknownRecord = Record<string, unknown>;
 type PauseHandler = () => void;
-
-interface QueuedLifecycleCall {
-  readonly method: string;
-  readonly args: readonly unknown[];
-}
+export type BridgeStatus = 'connecting' | 'connected' | 'standalone';
 
 interface ArkadiumSdkLoader {
   getInstance(): Promise<unknown>;
 }
 
+interface LifecycleMessage {
+  readonly module: 'lifecycle';
+  readonly method: string;
+  readonly args: readonly unknown[];
+}
+
 declare global {
   interface Window {
     ArkadiumGameSDK?: ArkadiumSdkLoader;
+    __clockworkLifecycleLog?: Array<{ method: string; args: unknown[] }>;
   }
 }
 
-export type BridgeStatus = 'connecting' | 'connected' | 'standalone';
-
 export class ArkadiumBridge extends EventTarget {
   readonly #debug: boolean;
-  readonly #previewRewards: boolean;
+  readonly #devReward: boolean;
+  readonly #version: string;
   #sdk: UnknownRecord | null = null;
   #status: BridgeStatus = 'connecting';
-  #readyToShow = false;
+  #initialization: Promise<void> | null = null;
+  #lateConnectStarted = false;
   #readySent = false;
   #gameStarted = false;
   #gameEnded = false;
   #pauseHandler: PauseHandler = () => undefined;
   #resumeHandler: PauseHandler = () => undefined;
-  #initialization: Promise<void> | null = null;
-  #lateConnectStarted = false;
-  #lifecycleCallbacksRegistered = false;
-  #lifecycleQueue: QueuedLifecycleCall[] = [];
+  #outbox: LifecycleMessage[] = [];
+  #flushing = false;
 
-  public constructor(private readonly version: string) {
+  public constructor(version: string) {
     super();
+    this.#version = version;
     const params = new URLSearchParams(location.search);
     this.#debug = params.get('debug') === '1' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-    this.#previewRewards = this.#debug && params.get('devReward') === '1';
+    this.#devReward = this.#debug && params.get('devReward') === '1';
   }
 
-  public get status(): BridgeStatus {
-    return this.#status;
-  }
-
-  public get connected(): boolean {
-    return this.#status === 'connected';
-  }
-
-  public get rewardedAvailable(): boolean {
-    return this.#hasMethod('ads', 'showRewardAd') || this.#previewRewards;
-  }
+  public get version(): string { return this.#version; }
+  public get status(): BridgeStatus { return this.#status; }
+  public get connected(): boolean { return this.#status === 'connected'; }
+  public get rewardedAvailable(): boolean { return this.#hasMethod('ads', 'showRewardAd') || this.#devReward; }
 
   public initialize(): Promise<void> {
     this.#initialization ??= this.#initializeInternal();
@@ -65,48 +61,45 @@ export class ArkadiumBridge extends EventTarget {
   public bindPauseHandlers(onPause: PauseHandler, onResume: PauseHandler): void {
     this.#pauseHandler = onPause;
     this.#resumeHandler = onResume;
-    if (this.#sdk) {
-      this.#registerLifecycleCallbacks();
-    }
+    this.#registerLifecycleCallbacks();
   }
 
   public async markReady(): Promise<void> {
-    this.#readyToShow = true;
-    if (this.#readySent) {
-      return;
+    if (!this.#readySent) {
+      this.#readySent = true;
+      await this.#lifecycle('onTestReady');
     }
-    this.#readySent = true;
-    await this.#sendOrQueueLifecycle('onTestReady');
   }
 
   public async gameStart(): Promise<void> {
-    if (this.#gameStarted) {
-      return;
-    }
+    if (this.#gameStarted) return;
     this.#gameStarted = true;
-    await this.#sendOrQueueLifecycle('onGameStart');
+    this.#gameEnded = false;
+    await this.#lifecycle('onGameStart');
     await this.#analytics('sendStartButtonClickedEvent', 'New');
     await this.#analytics('sendGameScreenPageView');
     await this.#analytics('sendGameplayReadyEvent');
   }
 
   public async gameEnd(): Promise<void> {
-    if (this.#gameEnded || !this.#gameStarted) {
-      return;
-    }
+    if (this.#gameEnded || !this.#gameStarted) return;
     this.#gameEnded = true;
-    await this.#sendOrQueueLifecycle('onGameEnd');
+    await this.#lifecycle('onGameEnd');
   }
 
   public async levelStart(level: number): Promise<void> {
-    await this.#sendOrQueueLifecycle('onLevelStart', level);
+    await this.#lifecycle('onLevelStart', level);
     await this.#analytics('sendRoundEvent', { round: level });
   }
 
   public async levelEnd(level: number, score: number): Promise<void> {
-    await this.#sendOrQueueLifecycle('onLevelEnd', level);
-    await this.#sendOrQueueLifecycle('onChangeScore', score);
+    await this.#lifecycle('onLevelEnd', level);
+    await this.#lifecycle('onChangeScore', score);
     await this.#analytics('sendRoundEndEvent', 'Finished', { round: level, reason: 'Completed' });
+  }
+
+  public async scoreChanged(score: number): Promise<void> {
+    await this.#lifecycle('onChangeScore', score);
   }
 
   public async gameWon(score: number, elapsedSeconds: number): Promise<void> {
@@ -114,30 +107,16 @@ export class ArkadiumBridge extends EventTarget {
     await this.#analytics('sendGameOverPageView', { score, timespent: Math.round(elapsedSeconds) });
   }
 
-  public async scoreChanged(score: number): Promise<void> {
-    await this.#sendOrQueueLifecycle('onChangeScore', score);
-  }
-
-  public async firstMove(): Promise<void> {
-    await this.#analytics('sendFirstMoveEvent');
-  }
-
+  public async firstMove(): Promise<void> { await this.#analytics('sendFirstMoveEvent'); }
   public async appStarted(): Promise<void> {
     await this.#analytics('sendAppStartedEvent');
     await this.#analytics('sendIntroScreenPageView');
   }
-
-  public async mainScreenReady(): Promise<void> {
-    await this.#analytics('sendMainScreenReadyEvent');
-  }
-
+  public async mainScreenReady(): Promise<void> { await this.#analytics('sendMainScreenReadyEvent'); }
   public async menuAction(action: 'Sound_On' | 'Sound_Off' | 'Music_On' | 'Music_Off'): Promise<void> {
     await this.#analytics('sendMenuActionsEvent', action);
   }
-
-  public async helpOpened(): Promise<void> {
-    await this.#analytics('sendHelpEvent');
-  }
+  public async helpOpened(): Promise<void> { await this.#analytics('sendHelpEvent'); }
 
   public async customEvent(category: string, action: string, dimensions: Record<string, string | number | boolean>): Promise<void> {
     await this.#analytics('sendEvent', category, action, dimensions);
@@ -147,9 +126,7 @@ export class ArkadiumBridge extends EventTarget {
     const normalized = error instanceof Error ? error : new Error(String(error));
     await this.#analytics('sendErrorEvent', { reason: normalized.message.slice(0, 500) });
     await this.#analytics('trackException', normalized);
-    if (this.#debug) {
-      console.error('[Clockwork Conservatory]', normalized);
-    }
+    if (this.#debug) console.error('[Clockwork Conservatory]', normalized);
   }
 
   public async loadProgress(key: string): Promise<unknown | null> {
@@ -158,12 +135,10 @@ export class ArkadiumBridge extends EventTarget {
       try {
         if (await this.#isAuthorized()) {
           const remote = await this.#invoke('persistence', 'getRemoteStorageItem', key);
-          if (remote !== null && remote !== undefined) {
-            return remote;
-          }
+          if (remote !== null && remote !== undefined) return remote;
         }
         const local = await this.#invoke('persistence', 'getLocalStorageItem', key);
-        return local ?? null;
+        if (local !== null && local !== undefined) return local;
       } catch (error) {
         await this.reportError(error);
       }
@@ -172,24 +147,18 @@ export class ArkadiumBridge extends EventTarget {
   }
 
   public async saveProgress(key: string, progress: PersistedProgress): Promise<void> {
-    if (this.#sdk) {
-      try {
-        await this.#invoke('persistence', 'setLocalStorageItem', key, progress);
-        if (await this.#isAuthorized()) {
-          await this.#invoke('persistence', 'setRemoteStorageItem', key, progress);
-        }
-        return;
-      } catch (error) {
-        await this.reportError(error);
-      }
-    }
     this.#standaloneSave(key, progress);
+    if (!this.#sdk) return;
+    try {
+      await this.#invoke('persistence', 'setLocalStorageItem', key, progress);
+      if (await this.#isAuthorized()) await this.#invoke('persistence', 'setRemoteStorageItem', key, progress);
+    } catch (error) {
+      await this.reportError(error);
+    }
   }
 
   public async showInterstitial(): Promise<void> {
-    if (!this.#sdk || !this.#hasMethod('ads', 'showInterstitialAd')) {
-      return;
-    }
+    if (!this.#sdk || !this.#hasMethod('ads', 'showInterstitialAd')) return;
     this.#pauseHandler();
     try {
       await this.#invoke('ads', 'showInterstitialAd');
@@ -201,16 +170,11 @@ export class ArkadiumBridge extends EventTarget {
   }
 
   public async showRewarded(): Promise<boolean> {
-    if (!this.#sdk || !this.#hasMethod('ads', 'showRewardAd')) {
-      if (this.#previewRewards) {
-        console.info('[Arkadium bridge] Explicit devReward preview granted.');
-      }
-      return this.#previewRewards;
-    }
+    if (!this.#sdk || !this.#hasMethod('ads', 'showRewardAd')) return this.#devReward;
     this.#pauseHandler();
     try {
       const response = await this.#invoke('ads', 'showRewardAd');
-      return isRecord(response) && typeof response.value === 'number' ? response.value > 0 : false;
+      return isRecord(response) && typeof response.value === 'number' ? response.value > 0 : response === true;
     } catch (error) {
       await this.reportError(error);
       return false;
@@ -220,13 +184,11 @@ export class ArkadiumBridge extends EventTarget {
   }
 
   public async postDailyScore(score: number): Promise<boolean> {
-    if (!this.#sdk || !this.#hasMethod('leaderboard', 'postScore')) {
-      return false;
-    }
+    if (!this.#sdk || !this.#hasMethod('leaderboard', 'postScore')) return false;
     try {
-      const supported = await this.#invoke('leaderboard', 'isSupported');
-      if (supported === false) {
-        return false;
+      if (this.#hasMethod('leaderboard', 'isSupported')) {
+        const supported = await this.#invoke('leaderboard', 'isSupported');
+        if (supported === false) return false;
       }
       await this.#invoke('leaderboard', 'postScore', Math.round(score));
       return true;
@@ -238,214 +200,141 @@ export class ArkadiumBridge extends EventTarget {
 
   async #initializeInternal(): Promise<void> {
     const params = new URLSearchParams(location.search);
-    if (params.get('standalone') === '1' || location.protocol === 'file:') {
-      this.#setStandalone();
+    const opaquePreview = location.protocol === 'file:' || location.protocol === 'data:' || location.protocol === 'about:';
+    if (params.get('standalone') === '1' || (opaquePreview && !window.ArkadiumGameSDK)) {
+      this.#setStatus('standalone');
       return;
     }
-
     const connected = await this.#connectWithTimeout(1_800);
     if (!connected) {
-      this.#setStandalone();
+      this.#setStatus('standalone');
       this.#startLateConnection();
     }
   }
 
   async #connectWithTimeout(timeoutMs: number): Promise<boolean> {
-    const loader = window.ArkadiumGameSDK;
-    if (loader) {
-      return this.#connectFromLoader(loader);
-    }
-
+    if (window.ArkadiumGameSDK) return this.#connectFromLoader(window.ArkadiumGameSDK);
     const script = this.#ensureSdkScript();
     return new Promise<boolean>((resolve) => {
       let settled = false;
       const finish = (value: boolean): void => {
-        if (!settled) {
-          settled = true;
-          resolve(value);
-        }
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeout);
+        resolve(value);
       };
       const timeout = window.setTimeout(() => finish(false), timeoutMs);
-      script.addEventListener(
-        'load',
-        () => {
-          window.clearTimeout(timeout);
-          void this.#connectFromLoader(window.ArkadiumGameSDK).then(finish);
-        },
-        { once: true },
-      );
-      script.addEventListener(
-        'error',
-        () => {
-          window.clearTimeout(timeout);
-          finish(false);
-        },
-        { once: true },
-      );
+      script.addEventListener('load', () => void this.#connectFromLoader(window.ArkadiumGameSDK).then(finish), { once: true });
+      script.addEventListener('error', () => finish(false), { once: true });
     });
   }
 
   #ensureSdkScript(): HTMLScriptElement {
     const existing = document.querySelector<HTMLScriptElement>('script[data-arkadium-game-sdk]');
-    if (existing) {
-      return existing;
-    }
+    if (existing) return existing;
     const script = document.createElement('script');
     script.src = SDK_URL;
     script.async = true;
-    script.dataset.arkadiumGameSdk = 'true';
     script.crossOrigin = 'anonymous';
+    script.dataset.arkadiumGameSdk = 'true';
     document.head.append(script);
     return script;
   }
 
   #startLateConnection(): void {
-    if (this.#lateConnectStarted) {
-      return;
-    }
+    if (this.#lateConnectStarted) return;
     this.#lateConnectStarted = true;
     const script = this.#ensureSdkScript();
-    script.addEventListener(
-      'load',
-      () => {
-        void this.#connectFromLoader(window.ArkadiumGameSDK);
-      },
-      { once: true },
-    );
+    script.addEventListener('load', () => void this.#connectFromLoader(window.ArkadiumGameSDK), { once: true });
   }
 
   async #connectFromLoader(loader: ArkadiumSdkLoader | undefined): Promise<boolean> {
-    if (!loader) {
-      return false;
-    }
+    if (!loader) return false;
     try {
       const instance = await loader.getInstance();
-      if (!isRecord(instance)) {
-        return false;
-      }
+      if (!isRecord(instance)) return false;
       this.#sdk = instance;
-      this.#status = 'connected';
+      this.#setStatus('connected');
       this.#registerLifecycleCallbacks();
       await this.#configureAnalytics();
-      await this.#flushLifecycleQueue();
-      if (this.#readyToShow && !this.#readySent) {
-        this.#readySent = true;
-        await this.#sendOrQueueLifecycle('onTestReady');
-      }
+      await this.#flushLifecycleOutbox();
       this.dispatchEvent(new Event('connected'));
       return true;
     } catch (error) {
-      if (this.#debug) {
-        console.warn('[Arkadium bridge] SDK unavailable; continuing standalone.', error);
-      }
+      if (this.#debug) console.warn('[Arkadium bridge] SDK unavailable; continuing standalone.', error);
       return false;
     }
   }
 
   async #configureAnalytics(): Promise<void> {
-    if (!this.#sdk) {
-      return;
-    }
+    if (!this.#sdk) return;
     const analytics = this.#module('analytics');
-    if (this.#debug && this.#hasMethod('analytics', 'configureProvider')) {
-      const consoleProvider = analytics?.CONSOLE;
-      if (consoleProvider !== undefined) {
-        await this.#invoke('analytics', 'configureProvider', { provider: consoleProvider, appId: 'clockwork-preview' });
-      }
+    if (this.#debug && this.#hasMethod('analytics', 'configureProvider') && analytics?.CONSOLE !== undefined) {
+      await this.#invoke('analytics', 'configureProvider', { provider: analytics.CONSOLE, appId: 'clockwork-preview' });
     }
-
-    const productionAppId =
-      document.querySelector<HTMLMetaElement>('meta[name="arkadium-app-insights-id"]')?.content.trim() ?? '';
-    const appInsightsProvider = analytics?.APP_INSIGHTS;
-    if (productionAppId && appInsightsProvider !== undefined && this.#hasMethod('analytics', 'configureProvider')) {
-      await this.#invoke('analytics', 'configureProvider', {
-        provider: appInsightsProvider,
-        appId: productionAppId,
-      });
+    const productionAppId = document.querySelector<HTMLMetaElement>('meta[name="arkadium-app-insights-id"]')?.content.trim() ?? '';
+    if (productionAppId && analytics?.APP_INSIGHTS !== undefined && this.#hasMethod('analytics', 'configureProvider')) {
+      await this.#invoke('analytics', 'configureProvider', { provider: analytics.APP_INSIGHTS, appId: productionAppId });
     }
-
     if (this.#hasMethod('analytics', 'setDimensions')) {
       await this.#invoke('analytics', 'setDimensions', {
-        gameVersion: this.version,
-        renderer: 'canvas2d',
-        aiMode: 'local-adaptive',
+        gameVersion: this.#version,
+        renderer: 'canvas2d-premium',
+        aiMode: 'local-deterministic',
+        artTier: 'premium-2.5d',
       });
     }
   }
 
   #registerLifecycleCallbacks(): void {
-    if (this.#lifecycleCallbacksRegistered) {
-      return;
-    }
     const lifecycle = this.#module('lifecycle');
-    if (!lifecycle || typeof lifecycle.registerEventCallback !== 'function' || !isRecord(lifecycle.LifecycleEvent)) {
-      return;
-    }
-    const pauseEvent = lifecycle.LifecycleEvent.GAME_PAUSE;
-    const resumeEvent = lifecycle.LifecycleEvent.GAME_RESUME;
+    if (!lifecycle || typeof lifecycle.registerEventCallback !== 'function' || !isRecord(lifecycle.LifecycleEvent)) return;
     try {
-      if (pauseEvent !== undefined) {
-        Reflect.apply(lifecycle.registerEventCallback as (...args: unknown[]) => unknown, lifecycle, [
-          pauseEvent,
-          this.#pauseHandler,
-        ]);
-      }
-      if (resumeEvent !== undefined) {
-        Reflect.apply(lifecycle.registerEventCallback as (...args: unknown[]) => unknown, lifecycle, [
-          resumeEvent,
-          this.#resumeHandler,
-        ]);
-      }
-      this.#lifecycleCallbacksRegistered = true;
+      const pauseEvent = lifecycle.LifecycleEvent.GAME_PAUSE;
+      const resumeEvent = lifecycle.LifecycleEvent.GAME_RESUME;
+      if (pauseEvent !== undefined) Reflect.apply(lifecycle.registerEventCallback as (...args: unknown[]) => unknown, lifecycle, [pauseEvent, this.#pauseHandler]);
+      if (resumeEvent !== undefined) Reflect.apply(lifecycle.registerEventCallback as (...args: unknown[]) => unknown, lifecycle, [resumeEvent, this.#resumeHandler]);
     } catch (error) {
-      if (this.#debug) {
-        console.warn('[Arkadium bridge] Unable to register lifecycle callbacks.', error);
-      }
+      if (this.#debug) console.warn('[Arkadium bridge] Lifecycle callback registration failed.', error);
     }
   }
 
-  async #sendOrQueueLifecycle(method: string, ...args: unknown[]): Promise<void> {
+  async #lifecycle(method: string, ...args: unknown[]): Promise<void> {
+    window.__clockworkLifecycleLog ??= [];
+    window.__clockworkLifecycleLog.push({ method, args: [...args] });
     if (this.#sdk && this.#hasMethod('lifecycle', method)) {
       await this.#invoke('lifecycle', method, ...args);
       return;
     }
-
-    this.#lifecycleQueue.push({ method, args });
-    if (this.#lifecycleQueue.length > 64) {
-      this.#lifecycleQueue.splice(0, this.#lifecycleQueue.length - 64);
-    }
-    if (this.#debug) {
-      console.info(`[Arkadium lifecycle queued] ${method}`, ...args);
-    }
+    this.#outbox.push({ module: 'lifecycle', method, args });
+    if (this.#outbox.length > OUTBOX_LIMIT) this.#outbox.splice(0, this.#outbox.length - OUTBOX_LIMIT);
   }
 
-  async #flushLifecycleQueue(): Promise<void> {
-    if (!this.#sdk || this.#lifecycleQueue.length === 0) {
-      return;
-    }
-    const pending = this.#lifecycleQueue.splice(0);
-    for (const call of pending) {
-      await this.#invoke('lifecycle', call.method, ...call.args);
+  async #flushLifecycleOutbox(): Promise<void> {
+    if (this.#flushing || !this.#sdk) return;
+    this.#flushing = true;
+    try {
+      while (this.#outbox.length > 0) {
+        const message = this.#outbox.shift() as LifecycleMessage;
+        if (this.#hasMethod(message.module, message.method)) await this.#invoke(message.module, message.method, ...message.args);
+      }
+    } finally {
+      this.#flushing = false;
     }
   }
 
   async #waitForInitialConnection(): Promise<void> {
-    const initialization = this.initialize();
-    await Promise.race([initialization, delay(1_900)]);
+    await Promise.race([this.initialize(), delay(1_900)]);
   }
 
   async #isAuthorized(): Promise<boolean> {
-    if (!this.#hasMethod('auth', 'isUserAuthorized')) {
-      return false;
-    }
+    if (!this.#hasMethod('auth', 'isUserAuthorized')) return false;
     return (await this.#invoke('auth', 'isUserAuthorized')) === true;
   }
 
   async #analytics(method: string, ...args: unknown[]): Promise<void> {
     if (!this.#hasMethod('analytics', method)) {
-      if (this.#debug) {
-        console.info(`[Analytics preview] ${method}`, ...args);
-      }
+      if (this.#debug) console.info(`[Analytics preview] ${method}`, ...args);
       return;
     }
     await this.#invoke('analytics', method, ...args);
@@ -454,15 +343,11 @@ export class ArkadiumBridge extends EventTarget {
   async #invoke(moduleName: string, method: string, ...args: unknown[]): Promise<unknown> {
     const module = this.#module(moduleName);
     const callable = module?.[method];
-    if (typeof callable !== 'function') {
-      return undefined;
-    }
+    if (typeof callable !== 'function') return undefined;
     try {
       return await Reflect.apply(callable as (...parameters: unknown[]) => unknown, module, args);
     } catch (error) {
-      if (this.#debug) {
-        console.warn(`[Arkadium bridge] ${moduleName}.${method} failed.`, error);
-      }
+      if (this.#debug) console.warn(`[Arkadium bridge] ${moduleName}.${method} failed.`, error);
       return undefined;
     }
   }
@@ -476,15 +361,15 @@ export class ArkadiumBridge extends EventTarget {
     return typeof this.#module(moduleName)?.[method] === 'function';
   }
 
-  #setStandalone(): void {
-    this.#status = 'standalone';
-    this.dispatchEvent(new Event('standalone'));
+  #setStatus(status: BridgeStatus): void {
+    this.#status = status;
+    this.dispatchEvent(new CustomEvent<BridgeStatus>('status', { detail: status }));
   }
 
   #standaloneLoad(key: string): unknown | null {
     try {
       const raw = localStorage.getItem(key);
-      return raw ? (JSON.parse(raw) as unknown) : null;
+      return raw ? JSON.parse(raw) as unknown : null;
     } catch {
       return null;
     }
@@ -494,9 +379,7 @@ export class ArkadiumBridge extends EventTarget {
     try {
       localStorage.setItem(key, JSON.stringify(value));
     } catch (error) {
-      if (this.#debug) {
-        console.warn('[Clockwork Conservatory] Local preview save failed.', error);
-      }
+      if (this.#debug) console.warn('[Clockwork Conservatory] Local save failed.', error);
     }
   }
 }
