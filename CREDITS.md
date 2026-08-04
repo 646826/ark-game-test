@@ -1,11 +1,17 @@
-# Credits and Asset Provenance
+# Credits and asset provenance
 
-Clockwork Conservatory was created as an original web game implementation.
+## Original project art
 
-- Visual art: procedural Canvas 2D geometry, gradients, particles, and typography using system fonts.
-- Audio: original synthesized Web Audio effects generated at runtime.
-- Levels: deterministic procedural generation from original code.
-- Third-party runtime assets: none.
-- Player-facing generative AI services: none.
+All visual concepts, environmental treatments, specimen crops, UI ornament, procedural board rendering, and effects in this repository were created specifically for **Clockwork Conservatory: Bloom Circuit**.
 
-The Arkadium Game SDK is loaded from Arkadium's official CDN only when the game is hosted outside standalone preview mode. Its use is subject to Arkadium's terms and integration agreement.
+The six high-resolution concept images under `artifacts/concepts/` were generated as original visual-development material for this project. The optimized runtime environmental images under `public/assets/` were derived from those project-owned concepts, then recomposed, blurred, graded, compressed, and integrated as non-interactive background layers.
+
+No third-party game screenshots, trademarks, franchise characters, stock art, external fonts, or copied UI assets ship in the production build.
+
+## Audio
+
+Sound effects and ambient harmonic layers are synthesized at runtime with the Web Audio API. No external music or sound recordings ship with the game.
+
+## Software
+
+The implementation uses standards-based TypeScript, HTML, CSS, Canvas 2D, Web Audio, and browser APIs. TypeScript is the only development dependency.

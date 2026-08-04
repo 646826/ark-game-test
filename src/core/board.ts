@@ -1,145 +1,141 @@
 import {
   DIRECTIONS,
-  Direction,
   type BoardAnalysis,
   type DirectionBit,
-  type Leak,
+  type HintSuggestion,
   type PuzzleDefinition,
   type TileState,
 } from './types.js';
 
-export function tileKey(x: number, y: number): string {
-  return `${x}:${y}`;
-}
-
-export function rotateMask(mask: number, quarterTurns: number): number {
-  const turns = ((quarterTurns % 4) + 4) % 4;
-  let result = mask & 0b1111;
-  for (let index = 0; index < turns; index += 1) {
-    result = ((result << 1) & 0b1111) | ((result & Direction.West) >>> 3);
+export function rotateMask(mask: number, turns: number): number {
+  let result = mask & 15;
+  const normalized = ((Math.round(turns) % 4) + 4) % 4;
+  for (let index = 0; index < normalized; index += 1) {
+    result = ((result << 1) & 15) | ((result >> 3) & 1);
   }
   return result;
 }
 
-export function popCount(mask: number): number {
-  let value = mask & 0b1111;
-  let count = 0;
-  while (value !== 0) {
-    count += value & 1;
-    value >>>= 1;
-  }
-  return count;
-}
-
-export function rotationPeriod(baseMask: number): 1 | 2 | 4 {
-  if ((baseMask & 0b1111) === 0b1111) {
-    return 1;
-  }
-  if (rotateMask(baseMask, 2) === (baseMask & 0b1111)) {
-    return 2;
-  }
-  return 4;
-}
-
-export function normalizedRotation(tile: Pick<TileState, 'rotation' | 'baseMask'>): number {
-  const period = rotationPeriod(tile.baseMask);
-  return ((tile.rotation % period) + period) % period;
-}
-
-export function rotationsToTarget(tile: Pick<TileState, 'rotation' | 'targetRotation' | 'baseMask'>): number {
-  const period = rotationPeriod(tile.baseMask);
-  const current = ((tile.rotation % period) + period) % period;
-  const target = ((tile.targetRotation % period) + period) % period;
-  return (target - current + period) % period;
-}
-
-export function currentMask(tile: Pick<TileState, 'baseMask' | 'rotation'>): number {
+export function currentMask(tile: TileState): number {
   return rotateMask(tile.baseMask, tile.rotation);
 }
 
-export function canonicalizeMask(solutionMask: number): { baseMask: number; targetRotation: number } {
-  let bestMask = Number.POSITIVE_INFINITY;
-  let bestRotation = 0;
-  for (let candidateRotation = 0; candidateRotation < 4; candidateRotation += 1) {
-    const candidateBase = rotateMask(solutionMask, -candidateRotation);
-    if (candidateBase < bestMask) {
-      bestMask = candidateBase;
-      bestRotation = candidateRotation;
-    }
+export function rotationPeriod(mask: number): 1 | 2 | 4 {
+  if (rotateMask(mask, 1) === mask) return 1;
+  if (rotateMask(mask, 2) === mask) return 2;
+  return 4;
+}
+
+export function clockwiseDistanceToSolved(tile: TileState): 0 | 1 | 2 | 3 {
+  const period = rotationPeriod(tile.baseMask);
+  const distance = ((tile.solutionRotation - tile.rotation) % period + period) % period;
+  return Math.min(3, distance) as 0 | 1 | 2 | 3;
+}
+
+export function analyzeBoard(puzzle: PuzzleDefinition): BoardAnalysis {
+  const byPosition = new Map<string, TileState>();
+  const byId = new Map<string, TileState>();
+  for (const tile of puzzle.tiles) {
+    byPosition.set(`${tile.x},${tile.y}`, tile);
+    byId.set(tile.id, tile);
   }
-  return { baseMask: bestMask, targetRotation: bestRotation };
-}
 
-export function createTileMap(tiles: readonly TileState[]): Map<string, TileState> {
-  return new Map(tiles.map((tile) => [tileKey(tile.x, tile.y), tile]));
-}
-
-export function analyzeBoard(puzzle: Pick<PuzzleDefinition, 'tiles' | 'sourceId'>): BoardAnalysis {
-  const byCoordinate = createTileMap(puzzle.tiles);
-  const byId = new Map(puzzle.tiles.map((tile) => [tile.id, tile]));
   const powered = new Set<string>();
-  const leaks: Leak[] = [];
-  const queue: TileState[] = [];
-  const source = byId.get(puzzle.sourceId);
-
-  if (!source) {
-    return { powered, poweredPlants: 0, totalPlants: 0, leaks, solved: false };
-  }
-
-  powered.add(source.id);
-  queue.push(source);
+  const queue: string[] = [puzzle.sourceId];
+  powered.add(puzzle.sourceId);
 
   while (queue.length > 0) {
-    const tile = queue.shift() as TileState;
+    const id = queue.shift();
+    const tile = id ? byId.get(id) : undefined;
+    if (!tile) continue;
     const mask = currentMask(tile);
-
     for (const direction of DIRECTIONS) {
-      if ((mask & direction.bit) === 0) {
-        continue;
-      }
-      const neighbor = byCoordinate.get(tileKey(tile.x + direction.dx, tile.y + direction.dy));
+      if ((mask & direction.bit) === 0) continue;
+      const neighbor = byPosition.get(`${tile.x + direction.dx},${tile.y + direction.dy}`);
+      if (!neighbor || (currentMask(neighbor) & direction.opposite) === 0 || powered.has(neighbor.id)) continue;
+      powered.add(neighbor.id);
+      queue.push(neighbor.id);
+    }
+  }
+
+  const leaks: { tileId: string; direction: DirectionBit; powered: boolean }[] = [];
+  for (const tile of puzzle.tiles) {
+    if (!powered.has(tile.id)) continue;
+    const mask = currentMask(tile);
+    for (const direction of DIRECTIONS) {
+      if ((mask & direction.bit) === 0) continue;
+      const neighbor = byPosition.get(`${tile.x + direction.dx},${tile.y + direction.dy}`);
       if (!neighbor || (currentMask(neighbor) & direction.opposite) === 0) {
-        continue;
-      }
-      if (!powered.has(neighbor.id)) {
-        powered.add(neighbor.id);
-        queue.push(neighbor);
+        leaks.push({ tileId: tile.id, direction: direction.bit, powered: true });
       }
     }
   }
+
+  const plants = puzzle.tiles.filter((tile) => tile.kind === 'plant');
+  const poweredPlants = plants.filter((tile) => powered.has(tile.id)).length;
+  const totalPlants = plants.length;
+  const solved = totalPlants > 0 && poweredPlants === totalPlants && leaks.length === 0;
+  const plantProgress = totalPlants === 0 ? 0 : poweredPlants / totalPlants;
+  const leakPenalty = Math.min(0.45, leaks.length * 0.035);
+  return {
+    powered,
+    leaks,
+    poweredPlants,
+    totalPlants,
+    solved,
+    progress: Math.max(0, Math.min(1, plantProgress - leakPenalty)),
+  };
+}
+
+export function suggestHint(puzzle: PuzzleDefinition): HintSuggestion | null {
+  const baseline = analyzeBoard(puzzle);
+  let best: { tile: TileState; rotations: 1 | 2 | 3; score: number } | null = null;
 
   for (const tile of puzzle.tiles) {
-    const mask = currentMask(tile);
-    for (const direction of DIRECTIONS) {
-      if ((mask & direction.bit) === 0) {
-        continue;
-      }
-      const neighbor = byCoordinate.get(tileKey(tile.x + direction.dx, tile.y + direction.dy));
-      if (!neighbor || (currentMask(neighbor) & direction.opposite) === 0) {
-        leaks.push({ tileId: tile.id, direction: direction.bit });
+    if (tile.fixed) continue;
+    const period = rotationPeriod(tile.baseMask);
+    if (period === 1) continue;
+    const original = tile.rotation;
+    for (let rotations = 1; rotations < period; rotations += 1) {
+      tile.rotation = (original + rotations) % period;
+      const analysis = analyzeBoard(puzzle);
+      const score =
+        (analysis.solved ? 10_000 : 0) +
+        analysis.poweredPlants * 120 -
+        analysis.leaks.length * 9 +
+        analysis.progress * 100 -
+        rotations * 0.2;
+      if (!best || score > best.score) {
+        best = { tile, rotations: rotations as 1 | 2 | 3, score };
       }
     }
+    tile.rotation = original;
   }
 
-  const totalPlants = puzzle.tiles.filter((tile) => tile.kind === 'plant').length;
-  const poweredPlants = puzzle.tiles.filter((tile) => tile.kind === 'plant' && powered.has(tile.id)).length;
-  const solved = totalPlants > 0 && poweredPlants === totalPlants && powered.size === puzzle.tiles.length && leaks.length === 0;
+  if (best && best.score > baseline.poweredPlants * 120 - baseline.leaks.length * 9 + baseline.progress * 100) {
+    return { tileId: best.tile.id, rotations: best.rotations };
+  }
 
-  return { powered, poweredPlants, totalPlants, leaks, solved };
+  const fallback = puzzle.tiles
+    .filter((tile) => !tile.fixed && clockwiseDistanceToSolved(tile) > 0)
+    .sort((left, right) => clockwiseDistanceToSolved(left) - clockwiseDistanceToSolved(right))[0];
+  if (!fallback) return null;
+  return { tileId: fallback.id, rotations: clockwiseDistanceToSolved(fallback) as 1 | 2 | 3 };
 }
 
-export function directionFromDelta(dx: number, dy: number): DirectionBit {
-  const direction = DIRECTIONS.find((candidate) => candidate.dx === dx && candidate.dy === dy);
-  if (!direction) {
-    throw new Error(`Invalid direction delta: ${dx}, ${dy}`);
-  }
-  return direction.bit;
+export function clonePuzzle(puzzle: PuzzleDefinition): PuzzleDefinition {
+  return {
+    ...puzzle,
+    tiles: puzzle.tiles.map((tile) => ({ ...tile })),
+    ...(puzzle.tutorial ? { tutorial: { ...puzzle.tutorial } } : {}),
+  };
 }
 
-export function oppositeDirection(direction: DirectionBit): DirectionBit {
-  const definition = DIRECTIONS.find((candidate) => candidate.bit === direction);
-  if (!definition) {
-    throw new Error(`Unknown direction bit: ${direction}`);
+export function solvedClone(puzzle: PuzzleDefinition): PuzzleDefinition {
+  const clone = clonePuzzle(puzzle);
+  for (const tile of clone.tiles) {
+    tile.rotation = tile.solutionRotation;
+    tile.visualTurns = tile.solutionRotation;
   }
-  return definition.opposite;
+  return clone;
 }

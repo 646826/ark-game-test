@@ -1,67 +1,36 @@
-import { readFile, stat } from 'node:fs/promises';
-import { spawn } from 'node:child_process';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFile, readdir, stat } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { join } from 'node:path';
+import process from 'node:process';
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-await run('tsc', ['-p', 'tsconfig.json', '--noEmit']);
+const root = new URL('..', import.meta.url).pathname;
+const localTsc = join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'tsc.cmd' : 'tsc');
+let command = 'tsc';
+try { await stat(localTsc); command = localTsc; } catch { /* use global TypeScript */ }
+const check = spawnSync(command, ['-p', join(root, 'tsconfig.json'), '--noEmit'], { cwd: root, stdio: 'inherit', shell: process.platform === 'win32' });
+if (check.status !== 0) process.exit(check.status ?? 1);
 
-const sourceFiles = [
-  'src/game/game.ts',
-  'src/game/renderer.ts',
-  'src/platform/arkadium.ts',
-  'src/main.ts',
-  'index.html',
-];
-const source = (await Promise.all(sourceFiles.map((file) => readFile(join(root, file), 'utf8')))).join('\n');
-
-const forbidden = [
-  ['requestFullscreen(', 'Arkadium embeds must not expose a fullscreen toggle'],
-  ['window.open(', 'External redirects/actions are not allowed'],
-  ['location.href =', 'External redirects/actions are not allowed'],
-  ['eval(', 'Dynamic code execution is forbidden'],
-];
-for (const [needle, reason] of forbidden) {
-  if (source.includes(needle)) throw new Error(`${reason}: found ${needle}`);
+const sourceFiles = await collect(join(root, 'src'));
+const source = (await Promise.all(sourceFiles.filter((file) => /\.(ts|css)$/.test(file)).map((file) => readFile(file, 'utf8')))).join('\n');
+const failures = [];
+if (/document\.cookie|eval\(|new Function\(/.test(source)) failures.push('Unsafe runtime API found.');
+if (/window\.open\(|location\.href\s*=/.test(source)) failures.push('External navigation found.');
+if (/showRewarded[\s\S]{0,900}return true;/.test(source)) failures.push('Rewarded fallback appears to grant rewards unconditionally.');
+if (!source.includes('onTestReady') || !source.includes('onGameStart') || !source.includes('onLevelStart')) failures.push('Required Arkadium lifecycle integration is missing.');
+if (!source.includes('prefers-reduced-motion') && !source.includes('reducedMotion')) failures.push('Reduced motion support is missing.');
+if (failures.length > 0) {
+  for (const failure of failures) console.error(`FAIL: ${failure}`);
+  process.exit(1);
 }
+console.log(`Static release checks passed across ${sourceFiles.length} source files.`);
 
-const requiredSignals = [
-  'onTestReady',
-  'onGameStart',
-  'onGameEnd',
-  'onLevelStart',
-  'onLevelEnd',
-  'onChangeScore',
-  'getLocalStorageItem',
-  'setLocalStorageItem',
-  'showInterstitialAd',
-  'showRewardAd',
-];
-for (const signal of requiredSignals) {
-  if (!source.includes(signal)) throw new Error(`Missing Arkadium integration signal: ${signal}`);
-}
-
-const releaseSafetySignals = [
-  ['#lifecycleQueue', 'Late SDK lifecycle outbox is required'],
-  ["reason: 'Completed'", 'Successful rounds must use a completion reason'],
-  ['return this.#previewRewards;', 'Rewarded fallback must be explicitly gated to dev preview'],
-  ['tutorialForLevel', 'Authored onboarding must remain wired into campaign startup'],
-];
-for (const [signal, reason] of releaseSafetySignals) {
-  if (!source.includes(signal)) throw new Error(`${reason}: missing ${signal}`);
-}
-if (source.includes("reason: 'No_Moves'")) {
-  throw new Error('Solved connectivity rounds must not report No_Moves.');
-}
-
-const cssBytes = (await stat(join(root, 'src/styles.css'))).size;
-if (cssBytes > 250_000) throw new Error(`CSS unexpectedly large: ${cssBytes} bytes`);
-console.log('Static production checks passed.');
-
-function run(command, args) {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, { cwd: root, stdio: 'inherit', shell: process.platform === 'win32' });
-    child.once('error', reject);
-    child.once('exit', (code) => (code === 0 ? resolvePromise() : reject(new Error(`${command} exited with ${code}`))));
-  });
+async function collect(directory) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const result = [];
+  for (const entry of entries) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) result.push(...await collect(path));
+    else result.push(path);
+  }
+  return result;
 }

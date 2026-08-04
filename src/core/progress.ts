@@ -1,119 +1,89 @@
-import { createDefaultSkillProfile } from './difficulty.js';
-import type { PersistedProgress, SupportedLanguage } from './types.js';
+import type { PersistedProgress, PlantKind, QualityLevel, SupportedLanguage } from './types.js';
 
-export const SAVE_KEY = 'clockwork-conservatory-progress-v1';
+export const SAVE_KEY = 'clockwork-conservatory-progress-v3';
+const PLANTS: readonly PlantKind[] = ['lumen-orchid', 'moonbell', 'sun-dahlia', 'mist-lily', 'ember-bloom'];
 
-export function createDefaultProgress(language: SupportedLanguage): PersistedProgress {
+export function createDefaultProgress(language: SupportedLanguage = 'en'): PersistedProgress {
   return {
-    schemaVersion: 1,
+    schema: 3,
     campaignLevel: 1,
     totalScore: 0,
-    bestDaily: {},
-    skill: createDefaultSkillProfile(),
+    totalStars: 0,
+    bestScore: 0,
+    streak: 0,
+    dailyBest: {},
+    specimens: ['lumen-orchid'],
     settings: {
-      sound: true,
-      reducedMotion: globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false,
-      highContrast: globalThis.matchMedia?.('(prefers-contrast: more)').matches ?? false,
       language,
+      sound: true,
+      music: true,
+      reducedMotion: prefersReducedMotion(),
+      highContrast: false,
+      quality: 'auto',
     },
   };
 }
 
-export function sanitizeProgress(value: unknown, fallbackLanguage: SupportedLanguage): PersistedProgress {
+export function sanitizeProgress(value: unknown, fallbackLanguage: SupportedLanguage = 'en'): PersistedProgress {
   const fallback = createDefaultProgress(fallbackLanguage);
-  if (!isRecord(value) || value.schemaVersion !== 1) {
-    return fallback;
-  }
-
+  if (!isRecord(value)) return fallback;
   const settings = isRecord(value.settings) ? value.settings : {};
-  const skill = isRecord(value.skill) ? value.skill : {};
-  const language = isSupportedLanguage(settings.language) ? settings.language : fallbackLanguage;
-  const result: PersistedProgress = {
-    schemaVersion: 1,
-    campaignLevel: safeInteger(value.campaignLevel, 1, 1, 10_000),
-    totalScore: safeInteger(value.totalScore, 0, 0, Number.MAX_SAFE_INTEGER),
-    bestDaily: sanitizeDailyScores(value.bestDaily),
-    skill: {
-      rating: safeNumber(skill.rating, fallback.skill.rating, 0.05, 0.98),
-      emaEfficiency: safeNumber(skill.emaEfficiency, fallback.skill.emaEfficiency, 0, 1),
-      emaSecondsPerTile: safeNumber(skill.emaSecondsPerTile, fallback.skill.emaSecondsPerTile, 0.1, 120),
-      hintRate: safeNumber(skill.hintRate, fallback.skill.hintRate, 0, 1),
-      streak: safeInteger(skill.streak, 0, 0, 100_000),
-      completed: safeInteger(skill.completed, 0, 0, 100_000),
-    },
+  const specimens = Array.isArray(value.specimens) ? value.specimens.filter(isPlantKind) : fallback.specimens;
+  const progress: PersistedProgress = {
+    schema: 3,
+    campaignLevel: positiveInteger(value.campaignLevel, 1),
+    totalScore: nonNegativeNumber(value.totalScore, 0),
+    totalStars: nonNegativeNumber(value.totalStars, 0),
+    bestScore: nonNegativeNumber(value.bestScore, 0),
+    streak: nonNegativeNumber(value.streak ?? value.dailyStreak, 0),
+    dailyBest: sanitizeNumberRecord(value.dailyBest ?? value.bestDaily),
+    specimens: specimens.length > 0 ? [...new Set(specimens)] : ['lumen-orchid'],
     settings: {
-      sound: typeof settings.sound === 'boolean' ? settings.sound : fallback.settings.sound,
-      reducedMotion:
-        typeof settings.reducedMotion === 'boolean' ? settings.reducedMotion : fallback.settings.reducedMotion,
-      highContrast: typeof settings.highContrast === 'boolean' ? settings.highContrast : fallback.settings.highContrast,
-      language,
+      language: isLanguage(settings.language) ? settings.language : fallbackLanguage,
+      sound: typeof settings.sound === 'boolean' ? settings.sound : true,
+      music: typeof settings.music === 'boolean' ? settings.music : true,
+      reducedMotion: typeof settings.reducedMotion === 'boolean' ? settings.reducedMotion : prefersReducedMotion(),
+      highContrast: typeof settings.highContrast === 'boolean' ? settings.highContrast : false,
+      quality: isQuality(settings.quality) ? settings.quality : normalizeLegacyQuality(settings.quality),
     },
+    ...(typeof value.lastDailyDate === 'string' ? { lastDailyDate: value.lastDailyDate.slice(0, 10) } : {}),
   };
-
-  const activeCandidate = value.activeRun;
-  if (isRecord(activeCandidate)) {
-    const configCandidate = activeCandidate.config;
-    const rotationsCandidate = activeCandidate.rotations;
-    if (isRecord(configCandidate) && Array.isArray(rotationsCandidate)) {
-      const mode =
-        activeCandidate.mode === 'daily' || activeCandidate.mode === 'zen' || activeCandidate.mode === 'campaign'
-          ? activeCandidate.mode
-          : null;
-      if (mode && typeof activeCandidate.seed === 'string') {
-        result.activeRun = {
-          mode,
-          level: safeInteger(activeCandidate.level, 1, 1, 10_000),
-          seed: activeCandidate.seed.slice(0, 120),
-          config: {
-            tier: safeInteger(configCandidate.tier, 0, 0, 20),
-            cols: safeInteger(configCandidate.cols, 5, 3, 12),
-            rows: safeInteger(configCandidate.rows, 5, 3, 12),
-            activeCells: safeInteger(configCandidate.activeCells, 18, 4, 144),
-            minPlants: safeInteger(configCandidate.minPlants, 3, 1, 30),
-            maxPlants: safeInteger(configCandidate.maxPlants, 8, 1, 30),
-            preSolvedChance: safeNumber(configCandidate.preSolvedChance, 0.25, 0, 1),
-            fixedChance: safeNumber(configCandidate.fixedChance, 0.1, 0, 1),
-          },
-          rotations: rotationsCandidate.slice(0, 144).map((rotation: unknown) => safeInteger(rotation, 0, 0, 3)),
-          moves: safeInteger(activeCandidate.moves, 0, 0, 1_000_000),
-          hintsUsed: safeInteger(activeCandidate.hintsUsed, 0, 0, 1_000_000),
-          elapsedMs: safeInteger(activeCandidate.elapsedMs, 0, 0, 604_800_000),
-          score: safeInteger(activeCandidate.score, 0, 0, Number.MAX_SAFE_INTEGER),
-        };
-      }
+  if (isRecord(value.activeRun) && Array.isArray(value.activeRun.rotations)) {
+    const mode = value.activeRun.mode;
+    if (mode === 'campaign' || mode === 'daily' || mode === 'zen') {
+      progress.activeRun = {
+        seed: typeof value.activeRun.seed === 'string' ? value.activeRun.seed.slice(0, 160) : '',
+        mode,
+        level: positiveInteger(value.activeRun.level, 1),
+        rotations: value.activeRun.rotations.slice(0, 100).map((item) => Math.max(0, Math.min(3, Math.round(nonNegativeNumber(item, 0))))),
+        moves: nonNegativeNumber(value.activeRun.moves, 0),
+        hintsUsed: nonNegativeNumber(value.activeRun.hintsUsed, 0),
+        elapsedMs: nonNegativeNumber(value.activeRun.elapsedMs, 0),
+      };
     }
   }
+  return progress;
+}
 
+export function specimenForLevel(level: number): PlantKind | null {
+  const unlocks: readonly PlantKind[] = ['moonbell', 'sun-dahlia', 'mist-lily', 'ember-bloom'];
+  if (level > 0 && level % 4 === 0) return unlocks[Math.min(unlocks.length - 1, Math.floor(level / 4) - 1)] ?? null;
+  return null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value); }
+function positiveInteger(value: unknown, fallback: number): number { return typeof value === 'number' && Number.isFinite(value) && value >= 1 ? Math.floor(value) : fallback; }
+function nonNegativeNumber(value: unknown, fallback: number): number { return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback; }
+function sanitizeNumberRecord(value: unknown): Record<string, number> {
+  if (!isRecord(value)) return {};
+  const result: Record<string, number> = {};
+  for (const [key, item] of Object.entries(value).slice(0, 1_000)) {
+    if (typeof item === 'number' && Number.isFinite(item) && item >= 0) result[key.slice(0, 80)] = Math.round(item);
+  }
   return result;
 }
-
-export function serializedSize(progress: PersistedProgress): number {
-  return new TextEncoder().encode(JSON.stringify(progress)).byteLength;
-}
-
-function sanitizeDailyScores(value: unknown): Record<string, number> {
-  if (!isRecord(value)) {
-    return {};
-  }
-  const entries = Object.entries(value)
-    .filter(([key, score]) => /^\d{4}-\d{2}-\d{2}$/.test(key) && typeof score === 'number' && Number.isFinite(score))
-    .slice(-90)
-    .map(([key, score]) => [key, Math.max(0, Math.round(score as number))] as const);
-  return Object.fromEntries(entries);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function safeNumber(value: unknown, fallback: number, min: number, max: number): number {
-  return typeof value === 'number' && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
-}
-
-function safeInteger(value: unknown, fallback: number, min: number, max: number): number {
-  return Math.round(safeNumber(value, fallback, min, max));
-}
-
-function isSupportedLanguage(value: unknown): value is SupportedLanguage {
-  return value === 'en' || value === 'es' || value === 'fr' || value === 'de' || value === 'it';
-}
+function isPlantKind(value: unknown): value is PlantKind { return typeof value === 'string' && PLANTS.includes(value as PlantKind); }
+function isLanguage(value: unknown): value is SupportedLanguage { return value === 'en' || value === 'es' || value === 'fr' || value === 'de' || value === 'it' || value === 'ru'; }
+function isQuality(value: unknown): value is QualityLevel { return value === 'auto' || value === 'high' || value === 'balanced'; }
+function normalizeLegacyQuality(value: unknown): QualityLevel { return value === 'medium' || value === 'low' ? 'balanced' : 'auto'; }
+function prefersReducedMotion(): boolean { return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches; }

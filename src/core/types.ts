@@ -1,131 +1,117 @@
-export const Direction = {
-  North: 1,
-  East: 2,
-  South: 4,
-  West: 8,
-} as const;
-
-export type DirectionBit = (typeof Direction)[keyof typeof Direction];
 export type GameMode = 'campaign' | 'daily' | 'zen';
-export type TileKind = 'source' | 'path' | 'plant';
-export type PlantKind = 'aster' | 'orchid' | 'lotus' | 'fern' | 'rose';
+export type Screen = 'loading' | 'menu' | 'map' | 'playing' | 'complete';
+export type SupportedLanguage = 'en' | 'es' | 'fr' | 'de' | 'it' | 'ru';
+export type QualityLevel = 'auto' | 'high' | 'balanced';
+export type PlantKind = 'lumen-orchid' | 'moonbell' | 'sun-dahlia' | 'mist-lily' | 'ember-bloom';
 
-export interface DirectionDefinition {
+export const NORTH = 1 as const;
+export const EAST = 2 as const;
+export const SOUTH = 4 as const;
+export const WEST = 8 as const;
+export type DirectionBit = typeof NORTH | typeof EAST | typeof SOUTH | typeof WEST;
+
+export const DIRECTIONS: readonly {
   readonly bit: DirectionBit;
   readonly opposite: DirectionBit;
   readonly dx: number;
   readonly dy: number;
-  readonly name: 'north' | 'east' | 'south' | 'west';
-}
-
-export const DIRECTIONS: readonly DirectionDefinition[] = [
-  { bit: Direction.North, opposite: Direction.South, dx: 0, dy: -1, name: 'north' },
-  { bit: Direction.East, opposite: Direction.West, dx: 1, dy: 0, name: 'east' },
-  { bit: Direction.South, opposite: Direction.North, dx: 0, dy: 1, name: 'south' },
-  { bit: Direction.West, opposite: Direction.East, dx: -1, dy: 0, name: 'west' },
+}[] = [
+  { bit: NORTH, opposite: SOUTH, dx: 0, dy: -1 },
+  { bit: EAST, opposite: WEST, dx: 1, dy: 0 },
+  { bit: SOUTH, opposite: NORTH, dx: 0, dy: 1 },
+  { bit: WEST, opposite: EAST, dx: -1, dy: 0 },
 ] as const;
-
-export interface DifficultyConfig {
-  readonly tier: number;
-  readonly cols: number;
-  readonly rows: number;
-  readonly activeCells: number;
-  readonly minPlants: number;
-  readonly maxPlants: number;
-  readonly preSolvedChance: number;
-  readonly fixedChance: number;
-}
 
 export interface TileState {
   readonly id: string;
   readonly x: number;
   readonly y: number;
-  readonly kind: TileKind;
   readonly baseMask: number;
-  readonly solutionMask: number;
-  readonly targetRotation: number;
+  readonly kind: 'source' | 'plant' | 'pipe';
   readonly fixed: boolean;
   readonly plantKind?: PlantKind;
+  readonly solutionRotation: number;
   rotation: number;
   visualTurns: number;
+}
+
+export interface TutorialDefinition {
+  readonly title: string;
+  readonly body: string;
+  readonly targetId: string;
+  readonly step: number;
 }
 
 export interface PuzzleDefinition {
   readonly seed: string;
   readonly mode: GameMode;
   readonly level: number;
-  readonly config: DifficultyConfig;
-  readonly tiles: TileState[];
+  readonly width: number;
+  readonly height: number;
   readonly sourceId: string;
-  readonly optimalMoves: number;
-  readonly generatedAtVersion: number;
+  readonly tiles: TileState[];
+  readonly idealMoves: number;
+  readonly theme: number;
+  readonly tutorial?: TutorialDefinition;
+}
+
+export interface LeakPoint {
+  readonly tileId: string;
+  readonly direction: DirectionBit;
+  readonly powered: boolean;
 }
 
 export interface BoardAnalysis {
   readonly powered: ReadonlySet<string>;
+  readonly leaks: readonly LeakPoint[];
   readonly poweredPlants: number;
   readonly totalPlants: number;
-  readonly leaks: readonly Leak[];
   readonly solved: boolean;
-}
-
-export interface Leak {
-  readonly tileId: string;
-  readonly direction: DirectionBit;
+  readonly progress: number;
 }
 
 export interface HintSuggestion {
   readonly tileId: string;
-  readonly rotations: number;
-  readonly projectedScore: number;
-  readonly reason: 'immediate-improvement' | 'frontier-correction' | 'solution-correction';
-}
-
-export interface SkillProfile {
-  rating: number;
-  emaEfficiency: number;
-  emaSecondsPerTile: number;
-  hintRate: number;
-  streak: number;
-  completed: number;
-}
-
-export interface GameSettings {
-  sound: boolean;
-  reducedMotion: boolean;
-  highContrast: boolean;
-  language: SupportedLanguage;
-}
-
-export type SupportedLanguage = 'en' | 'es' | 'fr' | 'de' | 'it';
-
-export interface ActiveRunSnapshot {
-  readonly mode: GameMode;
-  readonly level: number;
-  readonly seed: string;
-  readonly config: DifficultyConfig;
-  readonly rotations: readonly number[];
-  readonly moves: number;
-  readonly hintsUsed: number;
-  readonly elapsedMs: number;
-  readonly score: number;
-}
-
-export interface PersistedProgress {
-  readonly schemaVersion: 1;
-  campaignLevel: number;
-  totalScore: number;
-  bestDaily: Record<string, number>;
-  skill: SkillProfile;
-  settings: GameSettings;
-  activeRun?: ActiveRunSnapshot;
+  readonly rotations: 1 | 2 | 3;
 }
 
 export interface CompletionStats {
-  readonly moves: number;
-  readonly optimalMoves: number;
-  readonly hintsUsed: number;
-  readonly elapsedMs: number;
   readonly score: number;
   readonly stars: 1 | 2 | 3;
+  readonly moves: number;
+  readonly elapsedMs: number;
+  readonly efficiency: number;
+}
+
+export interface GameSettings {
+  language: SupportedLanguage;
+  sound: boolean;
+  music: boolean;
+  reducedMotion: boolean;
+  highContrast: boolean;
+  quality: QualityLevel;
+}
+
+export interface ActiveRunSnapshot {
+  seed: string;
+  mode: GameMode;
+  level: number;
+  rotations: number[];
+  moves: number;
+  hintsUsed: number;
+  elapsedMs: number;
+}
+
+export interface PersistedProgress {
+  schema: 3;
+  campaignLevel: number;
+  totalScore: number;
+  totalStars: number;
+  bestScore: number;
+  streak: number;
+  lastDailyDate?: string;
+  dailyBest: Record<string, number>;
+  specimens: PlantKind[];
+  settings: GameSettings;
+  activeRun?: ActiveRunSnapshot;
 }

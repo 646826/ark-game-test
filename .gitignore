@@ -1,7 +1,6 @@
 node_modules/
 dist/
-.test-dist/
-.chromium-smoke/
 .DS_Store
 *.log
-coverage/
+.playwright/
+test-results/

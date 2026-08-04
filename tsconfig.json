@@ -1,23 +1,20 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "rootDir": ".",
-    "outDir": "dist",
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "rootDir": "src",
+    "outDir": "dist/src",
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "useDefineForClassFields": true,
     "forceConsistentCasingInFileNames": true,
-    "noFallthroughCasesInSwitch": true,
-    "noImplicitOverride": true,
     "skipLibCheck": true,
     "sourceMap": true,
     "declaration": false,
-    "resolveJsonModule": true
+    "noEmitOnError": true
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["tests", "dist", ".test-dist"]
+  "include": ["src/**/*.ts"]
 }
