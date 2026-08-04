@@ -26,7 +26,7 @@ Balanced also reduces particles and dust, removes costly Canvas filters and shad
 
 ## Event-driven rendering
 
-The renderer does not run a permanent 60 FPS loop.
+The renderer does not run a permanent 60 FPS loop. High mode also separates the illustrated board shell from its live effects.
 
 - Menu and map scenes contain no active Canvas puzzle and fully sleep after their initial invalidation.
 - Reduced Motion draws only on state changes and clears animation queues immediately.
@@ -34,6 +34,9 @@ The renderer does not run a permanent 60 FPS loop.
 - Recently active boards drop to the ambient rate and later to the idle rate.
 - Hidden, frozen, paused, or discarded pages stop renderer and audio work.
 - Resize work is coalesced through one animation frame.
+- High mode assembles platforms, pipe shells, regulators, plants, source, locks and leak art into a DPR-aware offscreen cache after a real state change.
+- Normal cinematic frames redraw one cached board plus lightweight aether, dials, source orbit, pollen, selection and particles rather than dozens of transparent 512–1024 px sprites.
+- Current-puzzle assets are prepared before gameplay becomes visible and only the platform variants, mechanism topologies and specimen kinds required by that board are requested.
 
 ## Bounded resources
 
@@ -58,9 +61,10 @@ The renderer does not run a permanent 60 FPS loop.
 7. DOM and horizontal-overflow bounds;
 8. a 72-cycle low-end mobile stress run with repeated rotations, undo, view movement, pause/resume, and orientation changes;
 9. renderer queue bounds and measured heap growth;
-10. first-menu and cumulative first-game network payload budgets, so hidden HD art cannot silently regress startup.
+10. separate first-menu, Balanced first-game, and High cinematic first-game payload budgets, so hidden art cannot silently regress startup;
+11. cinematic asset readiness, cache settlement, and steady-frame cost through `npm run cinematic:smoke`.
 
-The current report is written to `artifacts/performance-report.json`. In the latest local Chromium run, the mobile menu used about 738 KiB encoded, the Balanced first-game path used about 881 KiB, and the High first-game path used about 1.06 MiB. Hidden map, gameplay, and victory images are promoted from `data-src` only when their screen becomes active. These measurements are local guardrails and must be complemented by physical-device profiling.
+The current report is written to `artifacts/performance-report.json`. In the latest local Chromium run, the mobile menu used about 763 KiB encoded, the Balanced first-game path used about 0.94 MiB, and the High first-game path used about 2.57 MiB including the current-puzzle cinematic pack. The full High payload is intentionally limited to capable devices and remains below the 3.6 MB automated first-game ceiling; Data Saver, constrained hardware, or slow-network signals choose Balanced. Hidden map and victory images are still promoted only when their screen becomes active. These measurements are local guardrails and must be complemented by physical-device profiling.
 
 ## Physical-device release targets
 

@@ -1,6 +1,6 @@
 {
   "name": "Clockwork Conservatory browser performance guardrails",
-  "generatedAt": "2026-08-04T17:58:11Z",
+  "generatedAt": "2026-08-04T20:32:14Z",
   "pass": true,
   "scenarios": [
     {
@@ -15,19 +15,25 @@
         "canvasPixels": 1316640,
         "renderedFrames": 2,
         "skippedFrames": 0,
-        "lastDrawCostMs": 0.4,
-        "averageDrawCostMs": 0.4,
+        "lastDrawCostMs": 0.3,
+        "averageDrawCostMs": 0.35,
         "activeFps": 60,
         "ambientFps": 24,
         "particleCount": 0,
         "pendingBurstCount": 0,
         "powerTransitionCount": 0,
         "impactCount": 0,
-        "sleeping": true
+        "sleeping": true,
+        "staticCacheBuildMs": 0,
+        "staticCacheDirty": true,
+        "artMode": "procedural",
+        "cinematicReady": 0,
+        "cinematicRequired": 0,
+        "cinematicMissing": []
       },
       "resourceCount": 25,
-      "resourceTransferBytes": 763204,
-      "resourceEncodedBytes": 755704
+      "resourceTransferBytes": 788969,
+      "resourceEncodedBytes": 781469
     },
     {
       "label": "constrained-mobile",
@@ -42,7 +48,7 @@
         "cpuThrottle": 2
       },
       "diagnostics": {
-        "version": "1.2.0",
+        "version": "1.3.0",
         "screen": "playing",
         "quality": "balanced",
         "puzzle": {
@@ -55,24 +61,30 @@
           "adaptive": true,
           "effectiveDpr": 1.5,
           "canvasPixels": 740610,
-          "renderedFrames": 86,
-          "skippedFrames": 12,
-          "lastDrawCostMs": 2.3,
-          "averageDrawCostMs": 4.966,
+          "renderedFrames": 84,
+          "skippedFrames": 11,
+          "lastDrawCostMs": 2.5,
+          "averageDrawCostMs": 4.636,
           "activeFps": 30,
           "ambientFps": 12,
           "particleCount": 0,
           "pendingBurstCount": 0,
           "powerTransitionCount": 0,
           "impactCount": 0,
-          "sleeping": false
+          "sleeping": false,
+          "staticCacheBuildMs": 0,
+          "staticCacheDirty": true,
+          "artMode": "procedural",
+          "cinematicReady": 2,
+          "cinematicRequired": 0,
+          "cinematicMissing": []
         }
       },
-      "renderedFramesDuringSample": 30,
-      "effectiveRenderedFps": 19.99,
-      "sampleSeconds": 1.501,
+      "renderedFramesDuringSample": 26,
+      "effectiveRenderedFps": 17.26,
+      "sampleSeconds": 1.506,
       "domNodes": 416,
-      "heapUsed": 5269520,
+      "heapUsed": 4077064,
       "viewport": {
         "width": 390,
         "height": 844,
@@ -85,9 +97,9 @@
       "qualityMode": "auto",
       "overflowX": 0,
       "resourceCount": 29,
-      "resourceTransferBytes": 911300,
-      "resourceEncodedBytes": 902600,
-      "interactionToRenderMs": 14.2
+      "resourceTransferBytes": 994255,
+      "resourceEncodedBytes": 985555,
+      "interactionToRenderMs": 9.7
     },
     {
       "label": "strong-mobile",
@@ -102,7 +114,7 @@
         "cpuThrottle": 1
       },
       "diagnostics": {
-        "version": "1.2.0",
+        "version": "1.3.0",
         "screen": "playing",
         "quality": "high",
         "puzzle": {
@@ -115,24 +127,30 @@
           "adaptive": true,
           "effectiveDpr": 2,
           "canvasPixels": 1316640,
-          "renderedFrames": 123,
-          "skippedFrames": 1,
-          "lastDrawCostMs": 1.6,
-          "averageDrawCostMs": 2.175,
+          "renderedFrames": 203,
+          "skippedFrames": 2,
+          "lastDrawCostMs": 0.5,
+          "averageDrawCostMs": 0.346,
           "activeFps": 60,
           "ambientFps": 24,
           "particleCount": 0,
           "pendingBurstCount": 0,
           "powerTransitionCount": 0,
           "impactCount": 0,
-          "sleeping": false
+          "sleeping": false,
+          "staticCacheBuildMs": 1,
+          "staticCacheDirty": false,
+          "artMode": "cinematic",
+          "cinematicReady": 15,
+          "cinematicRequired": 15,
+          "cinematicMissing": []
         }
       },
-      "renderedFramesDuringSample": 37,
-      "effectiveRenderedFps": 24.64,
-      "sampleSeconds": 1.501,
+      "renderedFramesDuringSample": 68,
+      "effectiveRenderedFps": 45.27,
+      "sampleSeconds": 1.502,
       "domNodes": 416,
-      "heapUsed": 3303226,
+      "heapUsed": 6840770,
       "viewport": {
         "width": 390,
         "height": 844,
@@ -144,10 +162,10 @@
       },
       "qualityMode": "auto",
       "overflowX": 0,
-      "resourceCount": 34,
-      "resourceTransferBytes": 1096196,
-      "resourceEncodedBytes": 1085996,
-      "interactionToRenderMs": 4.5
+      "resourceCount": 46,
+      "resourceTransferBytes": 2705561,
+      "resourceEncodedBytes": 2691761,
+      "interactionToRenderMs": 42.0
     },
     {
       "label": "desktop",
@@ -162,7 +180,7 @@
         "cpuThrottle": 1
       },
       "diagnostics": {
-        "version": "1.2.0",
+        "version": "1.3.0",
         "screen": "playing",
         "quality": "high",
         "puzzle": {
@@ -175,24 +193,30 @@
           "adaptive": true,
           "effectiveDpr": 1,
           "canvasPixels": 1296000,
-          "renderedFrames": 85,
+          "renderedFrames": 69,
           "skippedFrames": 1,
-          "lastDrawCostMs": 1.7,
-          "averageDrawCostMs": 2.548,
+          "lastDrawCostMs": 0.4,
+          "averageDrawCostMs": 0.386,
           "activeFps": 60,
           "ambientFps": 24,
           "particleCount": 0,
           "pendingBurstCount": 0,
           "powerTransitionCount": 0,
           "impactCount": 0,
-          "sleeping": false
+          "sleeping": false,
+          "staticCacheBuildMs": 0.7,
+          "staticCacheDirty": false,
+          "artMode": "cinematic",
+          "cinematicReady": 15,
+          "cinematicRequired": 15,
+          "cinematicMissing": []
         }
       },
-      "renderedFramesDuringSample": 28,
-      "effectiveRenderedFps": 18.65,
+      "renderedFramesDuringSample": 27,
+      "effectiveRenderedFps": 17.98,
       "sampleSeconds": 1.502,
       "domNodes": 416,
-      "heapUsed": 4542697,
+      "heapUsed": 4798537,
       "viewport": {
         "width": 1440,
         "height": 900,
@@ -204,16 +228,16 @@
       },
       "qualityMode": "auto",
       "overflowX": 0,
-      "resourceCount": 35,
-      "resourceTransferBytes": 1230704,
-      "resourceEncodedBytes": 1220204,
-      "interactionToRenderMs": 28.8
+      "resourceCount": 46,
+      "resourceTransferBytes": 2727563,
+      "resourceEncodedBytes": 2713763,
+      "interactionToRenderMs": 69.2
     },
     {
       "label": "stability-stress",
       "cycles": 72,
       "before": {
-        "heap": 4920463,
+        "heap": 4989272,
         "nodes": 416,
         "puzzle": {
           "mode": "campaign",
@@ -222,12 +246,12 @@
         }
       },
       "after": {
-        "heap": 4706856,
+        "heap": 4602776,
         "nodes": 416,
         "overflowX": 0,
         "screen": "playing",
         "diagnostics": {
-          "version": "1.2.0",
+          "version": "1.3.0",
           "screen": "playing",
           "quality": "balanced",
           "puzzle": {
@@ -240,17 +264,23 @@
             "adaptive": true,
             "effectiveDpr": 1.5,
             "canvasPixels": 740610,
-            "renderedFrames": 97,
+            "renderedFrames": 100,
             "skippedFrames": 13,
-            "lastDrawCostMs": 1.3,
-            "averageDrawCostMs": 1.615,
+            "lastDrawCostMs": 1.5,
+            "averageDrawCostMs": 1.41,
             "activeFps": 30,
             "ambientFps": 12,
             "particleCount": 0,
             "pendingBurstCount": 0,
             "powerTransitionCount": 0,
             "impactCount": 0,
-            "sleeping": false
+            "sleeping": false,
+            "staticCacheBuildMs": 0,
+            "staticCacheDirty": true,
+            "artMode": "procedural",
+            "cinematicReady": 2,
+            "cinematicRequired": 0,
+            "cinematicMissing": []
           }
         }
       }

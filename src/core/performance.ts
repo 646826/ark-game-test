@@ -37,8 +37,8 @@ const HIGH_PROFILE: Omit<RenderProfile, 'adaptive'> = {
   idleFps: 10,
   dustCount: 42,
   particleScale: 1,
-  useFilters: true,
-  useExpensiveShadows: true,
+  useFilters: false,
+  useExpensiveShadows: false,
   parallaxStrength: 1,
 };
 

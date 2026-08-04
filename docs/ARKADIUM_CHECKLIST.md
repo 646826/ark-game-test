@@ -1,6 +1,6 @@
 # Arkadium publishing checklist
 
-This document maps release candidate 1.2.0 to public Arkadium expectations and the integration work that must be finalized with an assigned producer.
+This document maps release candidate 1.3.0 to public Arkadium expectations and the integration work that must be finalized with an assigned producer.
 
 ## Public fit
 

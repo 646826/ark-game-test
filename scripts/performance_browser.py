@@ -218,8 +218,12 @@ def run_device(
             raise AssertionError(f"{label}: input-to-render latency is too high: {interaction_latency} ms")
         if result["overflowX"] > 2:
             raise AssertionError(f"{label}: horizontal overflow {result['overflowX']} px")
-        if result["resourceEncodedBytes"] > 1_800_000:
-            raise AssertionError(f"{label}: cumulative first-game payload is too large: {result['resourceEncodedBytes']} bytes")
+        payload_budget = 1_800_000 if expected_quality == "balanced" else 3_600_000
+        if result["resourceEncodedBytes"] > payload_budget:
+            raise AssertionError(
+                f"{label}: cumulative first-game payload is too large: "
+                f"{result['resourceEncodedBytes']} > {payload_budget} bytes"
+            )
         if errors:
             raise AssertionError("\n".join(errors))
         return {

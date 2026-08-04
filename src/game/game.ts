@@ -449,6 +449,13 @@ export class ClockworkGame {
       this.#elapsedBaseMs = 0;
     }
 
+    this.#loadingOverlay.hidden = false;
+    try {
+      await this.#renderer.preparePuzzle(puzzle);
+    } finally {
+      this.#loadingOverlay.hidden = true;
+    }
+
     this.#puzzle = puzzle;
     this.#analysis = analyzeBoard(puzzle);
     this.#initialLeaks = Math.max(1, this.#analysis.leaks.length);

@@ -120,9 +120,15 @@ def assert_toolbar_visible(page: Page, label: str) -> None:
 
 
 def wait_game(page: Page) -> None:
-    page.wait_for_selector("#game-hud:not([hidden])", timeout=12_000)
-    page.wait_for_function("document.querySelector('#app')?.dataset.screen === 'playing'", timeout=8_000)
-    page.wait_for_timeout(450)
+    page.wait_for_selector("#game-hud:not([hidden])", timeout=15_000)
+    page.wait_for_function("document.querySelector('#app')?.dataset.screen === 'playing'", timeout=12_000)
+    quality = page.locator("#app").get_attribute("data-quality")
+    if quality == "high":
+        page.wait_for_function(
+            "window.__clockworkDiagnostics?.().renderer?.artMode === 'cinematic'",
+            timeout=15_000,
+        )
+    page.wait_for_timeout(550)
 
 
 @contextmanager

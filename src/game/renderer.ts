@@ -45,7 +45,15 @@ type PremiumSpriteKey =
   | 'coupler'
   | 'leak'
   | 'lock'
-  | 'mechanism'
+  | 'mechanism-terminal'
+  | 'mechanism-straight'
+  | 'mechanism-elbow'
+  | 'mechanism-junction'
+  | 'pipe'
+  | 'platform-0'
+  | 'platform-1'
+  | 'platform-2'
+  | 'platform-3'
   | 'source'
   | 'tile-base'
   | 'plant-lumen-orchid-off'
@@ -74,6 +82,12 @@ export interface RendererDiagnostics {
   readonly powerTransitionCount: number;
   readonly impactCount: number;
   readonly sleeping: boolean;
+  readonly staticCacheBuildMs: number;
+  readonly staticCacheDirty: boolean;
+  readonly artMode: 'cinematic' | 'procedural';
+  readonly cinematicReady: number;
+  readonly cinematicRequired: number;
+  readonly cinematicMissing: readonly PremiumSpriteKey[];
 }
 interface Theme {
   glass: string;
@@ -105,6 +119,32 @@ const PLANT_PALETTES: Record<PlantKind, readonly [string, string, string]> = {
 
 const CORE_PREMIUM_SPRITES: readonly PremiumSpriteKey[] = ['leak', 'lock'] as const;
 
+const CINEMATIC_SPRITES = new Set<PremiumSpriteKey>([
+  'coupler',
+  'leak',
+  'lock',
+  'mechanism-terminal',
+  'mechanism-straight',
+  'mechanism-elbow',
+  'mechanism-junction',
+  'pipe',
+  'platform-0',
+  'platform-1',
+  'platform-2',
+  'platform-3',
+  'source',
+  'plant-lumen-orchid-off',
+  'plant-lumen-orchid-on',
+  'plant-moonbell-off',
+  'plant-moonbell-on',
+  'plant-sun-dahlia-off',
+  'plant-sun-dahlia-on',
+  'plant-mist-lily-off',
+  'plant-mist-lily-on',
+  'plant-ember-bloom-off',
+  'plant-ember-bloom-on',
+]);
+
 const PLANT_SPRITES: Record<PlantKind, readonly [PremiumSpriteKey, PremiumSpriteKey]> = {
   'lumen-orchid': ['plant-lumen-orchid-off', 'plant-lumen-orchid-on'],
   moonbell: ['plant-moonbell-off', 'plant-moonbell-on'],
@@ -113,9 +153,34 @@ const PLANT_SPRITES: Record<PlantKind, readonly [PremiumSpriteKey, PremiumSprite
   'ember-bloom': ['plant-ember-bloom-off', 'plant-ember-bloom-on'],
 };
 
+const PLATFORM_SPRITES = ['platform-0', 'platform-1', 'platform-2', 'platform-3'] as const;
+const MECHANISM_SPRITES = ['mechanism-terminal', 'mechanism-straight', 'mechanism-elbow', 'mechanism-junction'] as const;
+
+function platformSpriteKey(tile: TileState): PremiumSpriteKey {
+  const variant = (tile.x * 3 + tile.y * 5 + tile.baseMask) & 3;
+  return PLATFORM_SPRITES[variant] ?? 'platform-0';
+}
+
+function mechanismVariant(tile: TileState): 0 | 1 | 2 | 3 {
+  const ports = DIRECTIONS.filter((direction) => (tile.baseMask & direction.bit) !== 0);
+  const oppositePair =
+    ports.length === 2 &&
+    ((ports[0]?.bit === 1 && ports[1]?.bit === 4) ||
+      (ports[0]?.bit === 4 && ports[1]?.bit === 1) ||
+      (ports[0]?.bit === 2 && ports[1]?.bit === 8) ||
+      (ports[0]?.bit === 8 && ports[1]?.bit === 2));
+  return ports.length <= 1 ? 0 : oppositePair ? 1 : ports.length === 2 ? 2 : 3;
+}
+
+function mechanismSpriteKey(tile: TileState): PremiumSpriteKey {
+  return MECHANISM_SPRITES[mechanismVariant(tile)] ?? 'mechanism-terminal';
+}
+
 export class ConservatoryRenderer {
   readonly #canvas: HTMLCanvasElement;
-  readonly #context: CanvasRenderingContext2D;
+  #context: CanvasRenderingContext2D;
+  readonly #staticCanvas: HTMLCanvasElement;
+  readonly #staticContext: CanvasRenderingContext2D;
   readonly #art = new ConservatoryArtCache();
   readonly #sprites = new Map<PremiumSpriteKey, HTMLImageElement>();
   readonly #readySprites = new Set<PremiumSpriteKey>();
@@ -136,6 +201,10 @@ export class ConservatoryRenderer {
   #impacts = new Map<string, ImpactPulse>();
   #projected: ProjectedTile[] = [];
   #projectionDirty = true;
+  #staticDirty = true;
+  #renderingStatic = false;
+  #staticBuildCost = 0;
+  #skipNextDrawSample = false;
   #width = 1;
   #height = 1;
   #dpr = 1;
@@ -174,6 +243,10 @@ export class ConservatoryRenderer {
     const context = canvas.getContext('2d', { alpha: true, desynchronized: true }) ?? canvas.getContext('2d');
     if (!context) throw new Error('Canvas 2D is unavailable.');
     this.#context = context;
+    this.#staticCanvas = document.createElement('canvas');
+    const staticContext = this.#staticCanvas.getContext('2d', { alpha: true });
+    if (!staticContext) throw new Error('Canvas 2D static cache is unavailable.');
+    this.#staticContext = staticContext;
     if (typeof ResizeObserver === 'function') {
       this.#observer = new ResizeObserver(() => this.#queueResize());
       this.#observer.observe(canvas);
@@ -211,7 +284,26 @@ export class ConservatoryRenderer {
     this.#powerTransitions.clear();
     this.#impacts.clear();
     this.#projectionDirty = true;
+    this.#staticDirty = true;
     this.#invalidate();
+  }
+
+  public async preparePuzzle(puzzle: PuzzleDefinition, timeoutMs = 2_200): Promise<void> {
+    if (this.#profile.quality !== 'high') return;
+    const keys = this.#premiumSpritesForPuzzle(puzzle);
+    this.#ensurePremiumSprites(keys);
+    if (keys.every((key) => this.#readySprites.has(key))) return;
+    const deadline = performance.now() + Math.max(0, timeoutMs);
+    await new Promise<void>((resolve) => {
+      const poll = (): void => {
+        if (keys.every((key) => this.#readySprites.has(key)) || performance.now() >= deadline) {
+          resolve();
+          return;
+        }
+        window.setTimeout(poll, 24);
+      };
+      poll();
+    });
   }
 
   public setPuzzle(puzzle: PuzzleDefinition): void {
@@ -236,6 +328,7 @@ export class ConservatoryRenderer {
     this.#victoryStart = 0;
     this.#victoryEnd = 0;
     this.#projectionDirty = true;
+    this.#staticDirty = true;
     this.#ensurePremiumSprites(this.#profile.quality === 'high' ? this.#premiumSpritesForPuzzle(puzzle) : CORE_PREMIUM_SPRITES);
     this.#invalidate(1_200);
   }
@@ -293,6 +386,7 @@ export class ConservatoryRenderer {
       this.#progressFlashEnd = 0;
     }
     if (this.#pendingBursts.length > 20) this.#pendingBursts.splice(0, this.#pendingBursts.length - 20);
+    this.#staticDirty = true;
     this.#invalidate(this.#reducedMotion ? 0 : 1_200);
   }
 
@@ -320,14 +414,12 @@ export class ConservatoryRenderer {
     const nx = clamp(((clientX - rect.left) / Math.max(1, rect.width) - 0.5) * 2, -1, 1);
     const ny = clamp(((clientY - rect.top) / Math.max(1, rect.height) - 0.5) * 2, -1, 1);
     this.#targetParallax = { x: nx, y: ny };
-    this.#projectionDirty = true;
     this.#invalidate(520);
   }
 
   public resetPointer(): void {
     if (this.#targetParallax.x === 0 && this.#targetParallax.y === 0) return;
     this.#targetParallax = { x: 0, y: 0 };
-    this.#projectionDirty = true;
     this.#invalidate(520);
   }
 
@@ -377,12 +469,14 @@ export class ConservatoryRenderer {
       }
     }
     this.#projectionDirty = true;
+    this.#staticDirty = true;
     this.#invalidate(enabled ? 0 : 300);
   }
 
   public setHighContrast(enabled: boolean): void {
     if (enabled === this.#highContrast) return;
     this.#highContrast = enabled;
+    this.#staticDirty = true;
     this.#invalidate(240);
   }
 
@@ -397,6 +491,7 @@ export class ConservatoryRenderer {
       this.#art.clear();
       if (profile.quality === 'high' && this.#puzzle) this.#ensurePremiumSprites(this.#premiumSpritesForPuzzle(this.#puzzle));
       this.#createDust();
+      this.#staticDirty = true;
       this.resize();
       this.#invalidate(700);
     }
@@ -404,15 +499,16 @@ export class ConservatoryRenderer {
 
   public rotateView(delta: -1 | 1): void {
     this.#targetViewTurns += delta;
-    if (this.#reducedMotion) this.#viewTurns = this.#targetViewTurns;
+    if (this.#reducedMotion || this.#canUseStaticCache()) this.#viewTurns = this.#targetViewTurns;
     this.#projectionDirty = true;
-    this.#invalidate(1_000);
+    this.#staticDirty = true;
+    this.#invalidate(this.#canUseStaticCache() ? 220 : this.#reducedMotion ? 120 : 720);
   }
 
   public syncTile(tile: TileState): void {
-    if (!this.#displayTurns.has(tile.id)) this.#displayTurns.set(tile.id, tile.visualTurns);
-    this.#projectionDirty = true;
-    this.#invalidate(760);
+    if (!this.#displayTurns.has(tile.id) || this.#canUseStaticCache()) this.#displayTurns.set(tile.id, tile.visualTurns);
+    this.#staticDirty = true;
+    this.#invalidate(this.#canUseStaticCache() ? 260 : this.#reducedMotion ? 120 : 520);
   }
 
   public startVictorySequence(durationMs = 1_850): void {
@@ -454,13 +550,21 @@ export class ConservatoryRenderer {
       this.#canvas.width = width;
       this.#canvas.height = height;
     }
+    if (this.#staticCanvas.width !== width || this.#staticCanvas.height !== height) {
+      this.#staticCanvas.width = width;
+      this.#staticCanvas.height = height;
+    }
     this.#context.setTransform(this.#dpr, 0, 0, this.#dpr, 0, 0);
+    this.#staticContext.setTransform(this.#dpr, 0, 0, this.#dpr, 0, 0);
     this.#projectionDirty = true;
+    this.#staticDirty = true;
     this.#invalidate(420);
   }
 
   public getDiagnostics(): RendererDiagnostics {
     const average = this.#drawSamples.length === 0 ? 0 : this.#drawSamples.reduce((sum, value) => sum + value, 0) / this.#drawSamples.length;
+    const cinematicRequired = this.#profile.quality === 'high' && this.#puzzle ? this.#premiumSpritesForPuzzle(this.#puzzle) : [];
+    const cinematicMissing = cinematicRequired.filter((key) => !this.#readySprites.has(key));
     return {
       quality: this.#profile.quality,
       adaptive: this.#profile.adaptive,
@@ -477,6 +581,12 @@ export class ConservatoryRenderer {
       powerTransitionCount: this.#powerTransitions.size,
       impactCount: this.#impacts.size,
       sleeping: this.#frameId === 0 && this.#frameTimer === 0 && !this.#dirty,
+      staticCacheBuildMs: round(this.#staticBuildCost, 3),
+      staticCacheDirty: this.#staticDirty,
+      artMode: this.#canUseStaticCache() ? 'cinematic' : 'procedural',
+      cinematicReady: [...this.#readySprites].filter((key) => CINEMATIC_SPRITES.has(key)).length,
+      cinematicRequired: cinematicRequired.length,
+      cinematicMissing,
     };
   }
 
@@ -491,12 +601,17 @@ export class ConservatoryRenderer {
   }
 
   #premiumSpritesForPuzzle(puzzle: PuzzleDefinition): PremiumSpriteKey[] {
-    const keys = new Set<PremiumSpriteKey>(['coupler', 'leak', 'lock', 'mechanism', 'source', 'tile-base']);
+    const keys = new Set<PremiumSpriteKey>(['coupler', 'leak', 'pipe']);
     for (const tile of puzzle.tiles) {
-      if (tile.kind !== 'plant' || !tile.plantKind) continue;
-      const [off, on] = PLANT_SPRITES[tile.plantKind];
-      keys.add(off);
-      keys.add(on);
+      keys.add(platformSpriteKey(tile));
+      if (tile.kind === 'source') keys.add('source');
+      if (tile.kind === 'pipe') keys.add(mechanismSpriteKey(tile));
+      if (tile.fixed) keys.add('lock');
+      if (tile.kind === 'plant' && tile.plantKind) {
+        const [off, on] = PLANT_SPRITES[tile.plantKind];
+        keys.add(off);
+        keys.add(on);
+      }
     }
     return [...keys];
   }
@@ -521,6 +636,7 @@ export class ConservatoryRenderer {
           this.#readySprites.add(key);
           this.#assetWarmupUntil = Math.max(this.#assetWarmupUntil, performance.now() + 1_500);
           this.#loadSamples = [];
+          this.#staticDirty = true;
           this.#invalidate(520);
         };
         try {
@@ -535,9 +651,10 @@ export class ConservatoryRenderer {
         this.#readySprites.delete(key);
         this.#assetWarmupUntil = Math.max(this.#assetWarmupUntil, performance.now() + 500);
         this.#loadSamples = [];
+        this.#staticDirty = true;
         this.#invalidate();
       };
-      image.src = `./assets/hd/${key}.webp`;
+      image.src = CINEMATIC_SPRITES.has(key) ? `./assets/cinematic/${key}.webp` : `./assets/hd/${key}.webp`;
       this.#sprites.set(key, image);
     }
   }
@@ -554,6 +671,11 @@ export class ConservatoryRenderer {
       this.#resizeFrame = 0;
       this.resize();
     });
+  }
+
+  #canUseStaticCache(): boolean {
+    if (this.#profile.quality !== 'high' || !this.#puzzle) return false;
+    return this.#premiumSpritesForPuzzle(this.#puzzle).every((key) => this.#readySprites.has(key));
   }
 
   #invalidate(activeMs = 0): void {
@@ -641,13 +763,18 @@ export class ConservatoryRenderer {
     this.#parallax.y += (this.#targetParallax.y - this.#parallax.y) * parallaxSmoothing;
     if (Math.abs(this.#targetParallax.x - this.#parallax.x) < 0.001) this.#parallax.x = this.#targetParallax.x;
     if (Math.abs(this.#targetParallax.y - this.#parallax.y) < 0.001) this.#parallax.y = this.#targetParallax.y;
-    if (oldView !== this.#viewTurns || this.#parallax.x !== this.#targetParallax.x || this.#parallax.y !== this.#targetParallax.y) this.#projectionDirty = true;
+    if (oldView !== this.#viewTurns) this.#projectionDirty = true;
 
     if (this.#puzzle) {
       for (const tile of this.#puzzle.tiles) {
+        if (this.#canUseStaticCache()) {
+          this.#displayTurns.set(tile.id, tile.visualTurns);
+          continue;
+        }
         const current = this.#displayTurns.get(tile.id) ?? tile.visualTurns;
         const next = current + (tile.visualTurns - current) * smoothing;
-        this.#displayTurns.set(tile.id, Math.abs(tile.visualTurns - next) < 0.001 ? tile.visualTurns : next);
+        const resolved = Math.abs(tile.visualTurns - next) < 0.001 ? tile.visualTurns : next;
+        this.#displayTurns.set(tile.id, resolved);
       }
     }
     if (this.#hintId && time > this.#hintUntil) {
@@ -677,6 +804,11 @@ export class ConservatoryRenderer {
   }
 
   #recordDrawCost(cost: number, time: number, underLoad: boolean): void {
+    if (this.#skipNextDrawSample) {
+      this.#skipNextDrawSample = false;
+      this.#lastDrawCost = 0;
+      return;
+    }
     this.#drawSamples.push(cost);
     if (this.#drawSamples.length > 240) this.#drawSamples.splice(0, this.#drawSamples.length - 240);
     const eligibleLoadSample = underLoad && time >= this.#assetWarmupUntil;
@@ -747,11 +879,193 @@ export class ConservatoryRenderer {
     if (this.#projectionDirty || this.#projected.length === 0) {
       this.#projected = this.#projectBoard(puzzle);
       this.#projectionDirty = false;
+      this.#staticDirty = true;
     }
-    this.#drawBoardShadow(theme);
-    for (const projected of this.#projected) this.#drawTile(projected, theme, time);
+    if (this.#canUseStaticCache()) {
+      if (this.#staticDirty) this.#rebuildStaticBoard(theme, time);
+      context.drawImage(this.#staticCanvas, 0, 0, this.#width, this.#height);
+      this.#drawLiveBoardEffects(theme, time);
+    } else {
+      this.#drawBoardShadow(theme);
+      this.#drawConnectionBridges(theme, time);
+      for (const projected of this.#projected) this.#drawTile(projected, theme, time);
+    }
     this.#drawParticles(time, theme);
     this.#drawVictory(time, theme);
+  }
+
+  #rebuildStaticBoard(theme: Theme, time: number): void {
+    const started = performance.now();
+    const liveContext = this.#context;
+    this.#context = this.#staticContext;
+    this.#renderingStatic = true;
+    try {
+      this.#staticContext.setTransform(this.#dpr, 0, 0, this.#dpr, 0, 0);
+      this.#staticContext.clearRect(0, 0, this.#width, this.#height);
+      this.#drawBoardShadow(theme);
+      this.#drawConnectionBridges(theme, time);
+      for (const projected of this.#projected) this.#drawTile(projected, theme, time);
+      this.#staticDirty = false;
+      this.#drawSamples = [];
+      this.#skipNextDrawSample = true;
+    } finally {
+      this.#renderingStatic = false;
+      this.#context = liveContext;
+      this.#context.setTransform(this.#dpr, 0, 0, this.#dpr, 0, 0);
+      this.#staticBuildCost = performance.now() - started;
+    }
+  }
+
+  #drawLiveBoardEffects(theme: Theme, time: number): void {
+    if (!this.#analysis || !this.#puzzle) return;
+    const context = this.#context;
+    const byPosition = new Map(this.#projected.map((projected) => [`${projected.tile.x},${projected.tile.y}`, projected] as const));
+
+    // Animate only light, aether and feedback. Heavy illustrated shells remain in
+    // the offscreen board cache and are rebuilt only after a real state change.
+    for (const projected of this.#projected) {
+      const tile = projected.tile;
+      const power = this.#powerValue(tile.id, time, this.#analysis.powered.has(tile.id) ? 1 : 0);
+      const normalizedPower = clamp(power, 0, 1);
+      const turns = this.#displayTurns.get(tile.id) ?? tile.visualTurns;
+      if (normalizedPower > 0.018) {
+        const pulse = this.#reducedMotion ? 0.9 : 0.78 + Math.sin(time * 0.006 + tile.x * 1.31 + tile.y * 0.87) * 0.16;
+        context.save();
+        context.globalCompositeOperation = 'screen';
+        context.lineCap = 'round';
+        for (const direction of DIRECTIONS) {
+          if ((tile.baseMask & direction.bit) === 0) continue;
+          const vector = this.#directionVector(direction.bit, turns, projected.tileWidth, projected.tileHeight);
+          const inner = { x: projected.center.x + vector.x * 0.23, y: projected.center.y + vector.y * 0.23 };
+          const end = { x: projected.center.x + vector.x * 0.49, y: projected.center.y + vector.y * 0.49 };
+          context.strokeStyle = withAlpha('#1ccfff', normalizedPower * pulse * 0.58);
+          context.lineWidth = Math.max(3.0, projected.tileWidth * 0.032);
+          context.beginPath();
+          context.moveTo(inner.x, inner.y);
+          context.lineTo(end.x, end.y);
+          context.stroke();
+          context.strokeStyle = withAlpha(theme.aqua, normalizedPower * pulse * 0.76);
+          context.lineWidth = Math.max(1.85, projected.tileWidth * 0.018);
+          context.stroke();
+          context.strokeStyle = withAlpha('#f2ffff', normalizedPower * pulse * 0.70);
+          context.lineWidth = Math.max(0.9, projected.tileWidth * 0.0065);
+          context.stroke();
+          context.fillStyle = withAlpha(theme.aqua, normalizedPower * 0.86);
+          context.beginPath();
+          context.ellipse(end.x, end.y, projected.tileWidth * 0.0125, projected.tileWidth * 0.008, Math.atan2(vector.y, vector.x), 0, Math.PI * 2);
+          context.fill();
+          if (!this.#reducedMotion) {
+            const flow = (time * 0.00052 + tile.x * 0.173 + tile.y * 0.227 + direction.bit * 0.061) % 1;
+            const t = 0.12 + flow * 0.78;
+            context.fillStyle = withAlpha('#ffffff', normalizedPower * (0.52 + Math.sin(flow * Math.PI) * 0.38));
+            context.beginPath();
+            context.arc(inner.x + (end.x - inner.x) * t, inner.y + (end.y - inner.y) * t, Math.max(1.05, projected.tileWidth * 0.0075), 0, Math.PI * 2);
+            context.fill();
+          }
+        }
+        const coreRadius = projected.tileWidth * (tile.kind === 'source' ? 0.052 : tile.kind === 'plant' ? 0.026 : 0.020);
+        const coreY = tile.kind === 'plant' ? projected.center.y - projected.tileHeight * 0.23 : projected.center.y;
+        const core = context.createRadialGradient(projected.center.x, coreY, 0, projected.center.x, coreY, coreRadius * 2.8);
+        core.addColorStop(0, withAlpha('#ffffff', normalizedPower * 0.58));
+        core.addColorStop(0.24, withAlpha(theme.aqua, normalizedPower * 0.54));
+        core.addColorStop(1, 'rgba(0,0,0,0)');
+        context.fillStyle = core;
+        context.beginPath();
+        context.arc(projected.center.x, coreY, coreRadius * 2.8, 0, Math.PI * 2);
+        context.fill();
+
+        // Lightweight live details preserve motion after the illustrated board shell
+        // has been cached: a regulator dial, source orbit, or one drifting pollen mote.
+        if (!this.#reducedMotion && tile.kind === 'pipe') {
+          const dialRadius = projected.tileWidth * 0.052;
+          context.save();
+          context.translate(projected.center.x, projected.center.y);
+          context.rotate(time * 0.00032 * ((tile.x + tile.y) % 2 ? -1 : 1));
+          context.setLineDash([dialRadius * 0.34, dialRadius * 0.22]);
+          context.strokeStyle = withAlpha(theme.brassLight, 0.30 + normalizedPower * 0.18);
+          context.lineWidth = Math.max(0.8, projected.tileWidth * 0.0048);
+          context.beginPath();
+          context.arc(0, 0, dialRadius, 0, Math.PI * 2);
+          context.stroke();
+          context.setLineDash([]);
+          context.fillStyle = withAlpha(theme.aqua, 0.62 * normalizedPower);
+          context.beginPath();
+          context.arc(dialRadius, 0, Math.max(0.9, projected.tileWidth * 0.0055), 0, Math.PI * 2);
+          context.fill();
+          context.restore();
+        } else if (!this.#reducedMotion && tile.kind === 'source') {
+          const orbitRadius = projected.tileWidth * 0.105;
+          const phase = time * 0.00115;
+          context.strokeStyle = withAlpha(theme.brassLight, 0.24);
+          context.lineWidth = Math.max(0.8, projected.tileWidth * 0.004);
+          context.beginPath();
+          context.ellipse(projected.center.x, coreY, orbitRadius, orbitRadius * 0.42, -0.24, 0, Math.PI * 2);
+          context.stroke();
+          context.fillStyle = withAlpha('#ffffff', 0.78);
+          context.beginPath();
+          context.arc(
+            projected.center.x + Math.cos(phase) * orbitRadius,
+            coreY + Math.sin(phase) * orbitRadius * 0.42,
+            Math.max(1.1, projected.tileWidth * 0.0065),
+            0,
+            Math.PI * 2,
+          );
+          context.fill();
+        } else if (!this.#reducedMotion && tile.kind === 'plant') {
+          const phase = (time * 0.00022 + tile.x * 0.31 + tile.y * 0.17) % 1;
+          const pollenX = projected.center.x + Math.sin(time * 0.0014 + tile.x) * projected.tileWidth * 0.055;
+          const pollenY = coreY - projected.tileHeight * (0.18 + phase * 0.44);
+          context.fillStyle = withAlpha(theme.accent, normalizedPower * (0.22 + Math.sin(phase * Math.PI) * 0.35));
+          context.beginPath();
+          context.arc(pollenX, pollenY, Math.max(0.8, projected.tileWidth * 0.0048), 0, Math.PI * 2);
+          context.fill();
+        }
+        context.restore();
+      }
+
+      const selected = tile.id === this.#selectedId;
+      const hovered = tile.id === this.#hoveredId;
+      const pressed = tile.id === this.#pressedId;
+      const coached = tile.id === this.#coachId;
+      const hinted = tile.id === this.#hintId;
+      if (selected || hovered || pressed || coached || hinted) {
+        this.#drawSelection(projected.polygon, projected.tileWidth, theme, time, coached || hinted, pressed);
+      }
+      this.#drawImpact(projected, projected.center, theme, time);
+    }
+
+    // Continue aether across the physical gaps between mutually aligned plates.
+    context.save();
+    context.globalCompositeOperation = 'screen';
+    context.lineCap = 'round';
+    for (const projected of this.#projected) {
+      const mask = currentMask(projected.tile);
+      if (!this.#analysis.powered.has(projected.tile.id)) continue;
+      for (const direction of DIRECTIONS) {
+        if ((mask & direction.bit) === 0) continue;
+        const neighbor = byPosition.get(`${projected.tile.x + direction.dx},${projected.tile.y + direction.dy}`);
+        if (!neighbor || projected.tile.id >= neighbor.tile.id || !this.#analysis.powered.has(neighbor.tile.id)) continue;
+        if ((currentMask(neighbor.tile) & direction.opposite) === 0) continue;
+        const dx = neighbor.center.x - projected.center.x;
+        const dy = neighbor.center.y - projected.center.y;
+        const start = { x: projected.center.x + dx * 0.43, y: projected.center.y + dy * 0.43 };
+        const end = { x: projected.center.x + dx * 0.57, y: projected.center.y + dy * 0.57 };
+        const pulse = this.#reducedMotion ? 0.8 : 0.72 + Math.sin(time * 0.006 + projected.tile.x + projected.tile.y) * 0.16;
+        context.strokeStyle = withAlpha('#1ccfff', 0.58 * pulse);
+        context.lineWidth = Math.max(2.7, projected.tileWidth * 0.029);
+        context.beginPath();
+        context.moveTo(start.x, start.y);
+        context.lineTo(end.x, end.y);
+        context.stroke();
+        context.strokeStyle = withAlpha(theme.aqua, 0.78 * pulse);
+        context.lineWidth = Math.max(1.65, projected.tileWidth * 0.016);
+        context.stroke();
+        context.strokeStyle = withAlpha('#f0ffff', 0.68 * pulse);
+        context.lineWidth = Math.max(0.85, projected.tileWidth * 0.006);
+        context.stroke();
+      }
+    }
+    context.restore();
   }
 
   #drawAtmosphere(time: number): void {
@@ -824,14 +1138,15 @@ export class ConservatoryRenderer {
     const availW = available.right - available.left;
     const availH = available.bottom - available.top;
     const scale = Math.max(54, Math.min(availW / Math.max(1, maxX - minX), availH / Math.max(0.7, maxY - minY), portrait ? 225 : 300));
-    const tileWidth = scale;
-    const tileHeight = scale * (portrait ? 0.68 : 0.57);
+    // Cinematic platforms keep a small physical gap between neighbours. The old
+    // edge-to-edge slab made the live board read as a flat spreadsheet instead of
+    // a collection of crafted floating mechanisms.
+    const tileWidth = scale * 0.98;
+    const tileHeight = scale * (portrait ? 0.68 : 0.56);
     const boardW = (maxX - minX) * scale;
     const boardH = (maxY - minY) * scale;
-    const parallaxX = this.#parallax.x * (portrait ? 4 : 10) * this.#profile.parallaxStrength;
-    const parallaxY = this.#parallax.y * (portrait ? 3 : 6) * this.#profile.parallaxStrength;
-    const originX = available.left + (availW - boardW) / 2 - minX * scale + parallaxX;
-    const originY = available.top + (availH - boardH) / 2 - minY * scale + (portrait ? 2 : 10) + parallaxY;
+    const originX = available.left + (availW - boardW) / 2 - minX * scale;
+    const originY = available.top + (availH - boardH) / 2 - minY * scale + (portrait ? 2 : 10);
     const result = unitCenters.map(({ tile, x, y }) => {
       const center = { x: originX + x * scale, y: originY + y * scale };
       const polygon = diamond(center, tileWidth, tileHeight);
@@ -865,38 +1180,117 @@ export class ConservatoryRenderer {
     context.restore();
   }
 
+  #drawConnectionBridges(theme: Theme, time: number): void {
+    if (this.#profile.quality !== 'high' || !this.#puzzle || !this.#analysis) return;
+    const pipe = this.#premiumSprite('pipe');
+    if (!pipe) return;
+    const byPosition = new Map(this.#projected.map((projected) => [`${projected.tile.x},${projected.tile.y}`, projected] as const));
+    const context = this.#context;
+    for (const projected of this.#projected) {
+      const mask = currentMask(projected.tile);
+      for (const direction of DIRECTIONS) {
+        if ((mask & direction.bit) === 0) continue;
+        const neighbor = byPosition.get(`${projected.tile.x + direction.dx},${projected.tile.y + direction.dy}`);
+        if (!neighbor || projected.tile.id >= neighbor.tile.id) continue;
+        if ((currentMask(neighbor.tile) & direction.opposite) === 0) continue;
+
+        const dx = neighbor.center.x - projected.center.x;
+        const dy = neighbor.center.y - projected.center.y;
+        const length = Math.hypot(dx, dy);
+        if (length < 2) continue;
+        const angle = Math.atan2(dy, dx);
+        const width = Math.max(3.4, Math.min(projected.tileWidth, neighbor.tileWidth) * 0.046);
+        const pipeHeight = width * 2.75;
+        const powered = this.#analysis.powered.has(projected.tile.id) && this.#analysis.powered.has(neighbor.tile.id);
+        const pulse = this.#reducedMotion ? 0.9 : 0.82 + Math.sin(time * 0.006 + projected.tile.x * 0.7 + projected.tile.y) * 0.12;
+
+        context.save();
+        context.translate((projected.center.x + neighbor.center.x) / 2, (projected.center.y + neighbor.center.y) / 2);
+        context.rotate(angle);
+        if (this.#profile.useExpensiveShadows) {
+          context.shadowColor = 'rgba(0,0,0,.62)';
+          context.shadowBlur = width * 1.1;
+          context.shadowOffsetY = width * 0.45;
+        }
+        context.drawImage(pipe, -length / 2, -pipeHeight / 2, length, pipeHeight);
+        context.shadowBlur = 0;
+        context.shadowOffsetY = 0;
+        if (this.#renderingStatic) {
+          context.strokeStyle = 'rgba(42, 22, 9, .84)';
+          context.lineWidth = Math.max(1.6, width * 0.70);
+          context.lineCap = 'round';
+          context.beginPath();
+          context.moveTo(-length * 0.49, 0);
+          context.lineTo(length * 0.49, 0);
+          context.stroke();
+          context.strokeStyle = withAlpha(theme.brassLight, 0.62);
+          context.lineWidth = Math.max(0.95, width * 0.29);
+          context.stroke();
+        }
+        if (powered && !this.#renderingStatic) {
+          context.globalCompositeOperation = 'screen';
+          context.strokeStyle = withAlpha(theme.aqua, 0.58 * pulse);
+          context.lineWidth = width * 0.42;
+          context.lineCap = 'round';
+          context.beginPath();
+          context.moveTo(-length * 0.49, 0);
+          context.lineTo(length * 0.49, 0);
+          context.stroke();
+        }
+        context.restore();
+      }
+    }
+  }
+
   #drawTile(projected: ProjectedTile, theme: Theme, time: number): void {
     const { tile, center, polygon, tileWidth, tileHeight } = projected;
     const context = this.#context;
-    const power = this.#powerValue(tile.id, time, this.#analysis?.powered.has(tile.id) ? 1 : 0);
+    const fallbackPower = this.#analysis?.powered.has(tile.id) ? 1 : 0;
+    const power = this.#renderingStatic ? fallbackPower : this.#powerValue(tile.id, time, fallbackPower);
     const powered = power > 0.025;
-    const selected = tile.id === this.#selectedId;
-    const hovered = tile.id === this.#hoveredId;
-    const pressed = tile.id === this.#pressedId;
-    const coached = tile.id === this.#coachId;
-    const hinted = tile.id === this.#hintId;
+    const selected = !this.#renderingStatic && tile.id === this.#selectedId;
+    const hovered = !this.#renderingStatic && tile.id === this.#hoveredId;
+    const pressed = !this.#renderingStatic && tile.id === this.#pressedId;
+    const coached = !this.#renderingStatic && tile.id === this.#coachId;
+    const hinted = !this.#renderingStatic && tile.id === this.#hintId;
     const baseLift = selected || hovered || coached || hinted ? Math.max(2, tileHeight * 0.045) : 0;
     const lift = pressed ? Math.max(0, baseLift - tileHeight * 0.035) : baseLift;
     const topPolygon = polygon.map((point) => ({ x: point.x, y: point.y - lift })) as [Point, Point, Point, Point];
     context.save();
     const themeIndex = this.#puzzle?.theme ?? 0;
     const artVariant = (tile.x * 3 + tile.y * 5 + tile.baseMask) & 3;
-    const platform = this.#art.platform(themeIndex, theme, this.#profile.quality, artVariant);
-    const platformScaleX = tileWidth / 500;
-    const platformScaleY = tileHeight / 250;
-    context.drawImage(
-      platform.image,
-      center.x - platform.dimensions.anchorX * platformScaleX,
-      center.y - lift - platform.dimensions.anchorY * platformScaleY,
-      platform.dimensions.width * platformScaleX,
-      platform.dimensions.height * platformScaleY,
-    );
+    const cinematicPlatform = this.#profile.quality === 'high' ? this.#premiumSprite(platformSpriteKey(tile)) : null;
+    if (cinematicPlatform) {
+      // The cinematic plate is authored around a 944×444 isometric top diamond
+      // centred at (512, 276). Non-uniform fitting keeps that face aligned with
+      // the real hit polygon while retaining the deeper hand-painted extrusion.
+      const platformScaleX = tileWidth / 944;
+      const platformScaleY = tileHeight / 444;
+      context.drawImage(
+        cinematicPlatform,
+        center.x - 512 * platformScaleX,
+        center.y - lift - 276 * platformScaleY,
+        cinematicPlatform.naturalWidth * platformScaleX,
+        cinematicPlatform.naturalHeight * platformScaleY,
+      );
+    } else {
+      const platform = this.#art.platform(themeIndex, theme, this.#profile.quality, artVariant);
+      const platformScaleX = tileWidth / 500;
+      const platformScaleY = tileHeight / 250;
+      context.drawImage(
+        platform.image,
+        center.x - platform.dimensions.anchorX * platformScaleX,
+        center.y - lift - platform.dimensions.anchorY * platformScaleY,
+        platform.dimensions.width * platformScaleX,
+        platform.dimensions.height * platformScaleY,
+      );
+    }
 
     // A second hand-rendered plate is clipped to the interactive top surface. It
     // contributes micro-rivets, etched geometry and a different glass grain without
     // increasing per-frame vector work; the cached procedural extrusion remains the
     // authoritative geometry and hit shape.
-    const premiumPlate = this.#profile.quality === 'high' ? this.#premiumSprite('tile-base') : null;
+    const premiumPlate = this.#profile.quality === 'high' && !cinematicPlatform ? this.#premiumSprite('tile-base') : null;
     if (premiumPlate) {
       const spriteScaleX = tileWidth / 452;
       const spriteScaleY = tileHeight / 265;
@@ -949,7 +1343,7 @@ export class ConservatoryRenderer {
       context.save();
       pathPolygon(context, topPolygon);
       context.clip();
-      const shimmerOffset = this.#reducedMotion ? 0.48 : (time * 0.000035 + artVariant * 0.19) % 1;
+      const shimmerOffset = this.#reducedMotion || this.#renderingStatic ? 0.32 + artVariant * 0.13 : (time * 0.000035 + artVariant * 0.19) % 1;
       const shimmerX = center.x - tileWidth * 0.62 + shimmerOffset * tileWidth * 1.24;
       const sheen = context.createLinearGradient(shimmerX - tileWidth * 0.18, center.y - tileHeight, shimmerX + tileWidth * 0.18, center.y + tileHeight);
       sheen.addColorStop(0, 'rgba(255,255,255,0)');
@@ -969,8 +1363,8 @@ export class ConservatoryRenderer {
     else this.#drawMechanism(projected, { x: center.x, y: center.y - lift }, theme, power, time);
 
     if (tile.fixed && tile.kind === 'pipe') this.#drawLock(center.x + tileWidth * 0.27, center.y - lift - tileHeight * 0.10, tileWidth * 0.08, theme);
-    if (selected || hovered || coached || hinted || pressed) this.#drawSelection(topPolygon, tileWidth, theme, time, coached || hinted, pressed);
-    this.#drawImpact(projected, { x: center.x, y: center.y - lift }, theme, time);
+    if (!this.#renderingStatic && (selected || hovered || coached || hinted || pressed)) this.#drawSelection(topPolygon, tileWidth, theme, time, coached || hinted, pressed);
+    if (!this.#renderingStatic) this.#drawImpact(projected, { x: center.x, y: center.y - lift }, theme, time);
     context.restore();
 
     for (const direction of this.#leaksByTile.get(tile.id) ?? []) {
@@ -1009,67 +1403,106 @@ export class ConservatoryRenderer {
       const vector = this.#directionVector(direction.bit, turns, projected.tileWidth, projected.tileHeight);
       const end = { x: center.x + vector.x * 0.49, y: center.y + vector.y * 0.49 };
       const inner = { x: center.x + vector.x * 0.23, y: center.y + vector.y * 0.23 };
-      const width = Math.max(3.4, projected.tileWidth * 0.043);
+      const width = Math.max(3.8, projected.tileWidth * 0.056);
       context.save();
       context.lineCap = 'round';
       context.lineJoin = 'round';
-      context.strokeStyle = '#4b2f1a';
-      context.lineWidth = width * 1.72;
+      const pipeAngle = Math.atan2(vector.y, vector.x);
+      const cinematicPipe = this.#profile.quality === 'high' ? this.#premiumSprite('pipe') : null;
+      if (cinematicPipe) {
+        const length = Math.hypot(end.x - inner.x, end.y - inner.y) + width * 2.2;
+        const pipeHeight = width * 3.0;
+        const midpointX = (inner.x + end.x) / 2;
+        const midpointY = (inner.y + end.y) / 2;
+        context.save();
+        context.translate(midpointX, midpointY);
+        context.rotate(pipeAngle);
+        if (this.#profile.useExpensiveShadows) {
+          context.shadowColor = 'rgba(0,0,0,.42)';
+          context.shadowBlur = width * 0.9;
+          context.shadowOffsetY = width * 0.38;
+        }
+        context.drawImage(cinematicPipe, -length / 2, -pipeHeight / 2, length, pipeHeight);
+        context.restore();
+        if (this.#renderingStatic) {
+          context.strokeStyle = 'rgba(42, 22, 9, .84)';
+          context.lineWidth = Math.max(1.7, width * 0.72);
+          context.lineCap = 'round';
+          context.beginPath();
+          context.moveTo(inner.x, inner.y);
+          context.lineTo(end.x, end.y);
+          context.stroke();
+          context.strokeStyle = withAlpha(theme.brassLight, 0.68);
+          context.lineWidth = Math.max(1.0, width * 0.31);
+          context.stroke();
+        }
+      } else {
+        context.strokeStyle = '#4b2f1a';
+        context.lineWidth = width * 1.72;
+        context.beginPath();
+        context.moveTo(inner.x, inner.y);
+        context.lineTo(end.x, end.y);
+        context.stroke();
+        if (this.#profile.quality === 'high') {
+          const brass = context.createLinearGradient(inner.x, inner.y - width, end.x, end.y + width);
+          brass.addColorStop(0, theme.brassLight);
+          brass.addColorStop(0.35, theme.brass);
+          brass.addColorStop(0.72, '#755027');
+          brass.addColorStop(1, theme.brassLight);
+          context.strokeStyle = brass;
+        } else {
+          context.strokeStyle = theme.brass;
+        }
+        context.lineWidth = width * 1.08;
+        context.stroke();
+        context.strokeStyle = 'rgba(255, 238, 175, .45)';
+        context.lineWidth = width * 0.15;
+        context.stroke();
+
+        // A recessed glass core and engraved compression collars prevent the
+        // channels from reading as flat brown lines at gameplay scale.
+        context.strokeStyle = powered ? withAlpha(theme.aquaSoft, 0.30 + normalizedPower * 0.20) : 'rgba(5, 34, 35, .86)';
+        context.lineWidth = width * 0.36;
+        context.stroke();
+        for (const collarT of (this.#profile.quality === 'high' ? [0.46, 0.76] : [0.66])) {
+          const collarX = inner.x + (end.x - inner.x) * collarT;
+          const collarY = inner.y + (end.y - inner.y) * collarT;
+          context.save();
+          context.translate(collarX, collarY);
+          context.rotate(pipeAngle);
+          const collar = context.createLinearGradient(0, -width, 0, width);
+          collar.addColorStop(0, '#fff0ae');
+          collar.addColorStop(0.22, theme.brassLight);
+          collar.addColorStop(0.53, theme.brass);
+          collar.addColorStop(0.82, '#5b351b');
+          collar.addColorStop(1, '#dba956');
+          context.fillStyle = collar;
+          context.strokeStyle = 'rgba(255,238,185,.52)';
+          context.lineWidth = Math.max(.65, width * .10);
+          roundedRect(context, -width * .24, -width * .70, width * .48, width * 1.40, width * .13);
+          context.fill();
+          context.stroke();
+          context.restore();
+        }
+      }
+
+      // The animated aether core remains vector so it can react instantly to live
+      // network state even when the brass shell comes from a pre-rendered sprite.
       context.beginPath();
       context.moveTo(inner.x, inner.y);
       context.lineTo(end.x, end.y);
-      context.stroke();
-      if (this.#profile.quality === 'high') {
-        const brass = context.createLinearGradient(inner.x, inner.y - width, end.x, end.y + width);
-        brass.addColorStop(0, theme.brassLight);
-        brass.addColorStop(0.35, theme.brass);
-        brass.addColorStop(0.72, '#755027');
-        brass.addColorStop(1, theme.brassLight);
-        context.strokeStyle = brass;
-      } else {
-        context.strokeStyle = theme.brass;
-      }
-      context.lineWidth = width * 1.08;
-      context.stroke();
-      context.strokeStyle = 'rgba(255, 238, 175, .45)';
-      context.lineWidth = width * 0.15;
-      context.stroke();
-
-      // A recessed glass core and engraved compression collars prevent the
-      // channels from reading as flat brown lines at gameplay scale.
-      context.strokeStyle = powered ? withAlpha(theme.aquaSoft, 0.30 + normalizedPower * 0.20) : 'rgba(5, 34, 35, .86)';
-      context.lineWidth = width * 0.36;
-      context.stroke();
-      const pipeAngle = Math.atan2(vector.y, vector.x);
-      for (const collarT of (this.#profile.quality === 'high' ? [0.46, 0.76] : [0.66])) {
-        const collarX = inner.x + (end.x - inner.x) * collarT;
-        const collarY = inner.y + (end.y - inner.y) * collarT;
-        context.save();
-        context.translate(collarX, collarY);
-        context.rotate(pipeAngle);
-        const collar = context.createLinearGradient(0, -width, 0, width);
-        collar.addColorStop(0, '#fff0ae');
-        collar.addColorStop(0.22, theme.brassLight);
-        collar.addColorStop(0.53, theme.brass);
-        collar.addColorStop(0.82, '#5b351b');
-        collar.addColorStop(1, '#dba956');
-        context.fillStyle = collar;
-        context.strokeStyle = 'rgba(255,238,185,.52)';
-        context.lineWidth = Math.max(.65, width * .10);
-        roundedRect(context, -width * .24, -width * .70, width * .48, width * 1.40, width * .13);
-        context.fill();
-        context.stroke();
-        context.restore();
-      }
-      if (powered) {
+      if (powered && !this.#renderingStatic) {
         if (this.#profile.useExpensiveShadows) {
           context.shadowColor = theme.aqua;
           context.shadowBlur = width * 2.5 * normalizedPower;
         }
-        context.strokeStyle = withAlpha(theme.aqua, normalizedPower * pulse);
-        context.lineWidth = width * (0.28 + normalizedPower * 0.34);
+        context.strokeStyle = withAlpha(theme.aquaSoft, normalizedPower * pulse * 0.72);
+        context.lineWidth = width * (0.42 + normalizedPower * 0.34);
         context.stroke();
         context.shadowBlur = 0;
+        context.strokeStyle = withAlpha('#f4ffff', normalizedPower * (0.50 + pulse * 0.42));
+        context.lineWidth = width * (0.12 + normalizedPower * 0.15);
+        context.stroke();
         if (!this.#reducedMotion) {
           const travelerCount = this.#profile.quality === 'high' ? 2 : 1;
           const basePhase = projected.tile.x * 0.131 + projected.tile.y * 0.193 + direction.bit * 0.071;
@@ -1094,16 +1527,33 @@ export class ConservatoryRenderer {
       // End coupling. High-quality mode uses a pre-rendered brass jewel so the
       // tiny connector still has readable rivets and material depth on retina screens.
       context.shadowBlur = 0;
-      const coupler = powered && this.#profile.quality === 'high' ? this.#premiumSprite('coupler') : null;
+      const coupler = this.#profile.quality === 'high' ? this.#premiumSprite('coupler') : null;
       if (coupler) {
-        const couplerSize = width * 3.7;
+        const couplerSize = width * 3.15;
         context.save();
-        context.globalAlpha = 0.78 + normalizedPower * 0.22;
+        context.globalAlpha = 0.88 + normalizedPower * 0.12;
         if (this.#profile.useExpensiveShadows) {
           context.shadowColor = theme.aqua;
           context.shadowBlur = width * 1.9;
         }
         context.drawImage(coupler, end.x - couplerSize / 2, end.y - couplerSize / 2, couplerSize, couplerSize);
+        if (powered) {
+          context.globalCompositeOperation = 'screen';
+          context.fillStyle = withAlpha(theme.aqua, 0.46 + normalizedPower * 0.44);
+          context.shadowColor = theme.aqua;
+          context.shadowBlur = width * 1.55 * normalizedPower;
+          context.beginPath();
+          context.ellipse(
+            end.x,
+            end.y,
+            width * (0.28 + normalizedPower * 0.16),
+            width * (0.18 + normalizedPower * 0.10),
+            Math.atan2(vector.y, vector.x),
+            0,
+            Math.PI * 2,
+          );
+          context.fill();
+        }
         context.restore();
       } else {
         context.fillStyle = '#271a12';
@@ -1132,48 +1582,60 @@ export class ConservatoryRenderer {
     const context = this.#context;
     const normalizedPower = clamp(power, 0, 1);
     const themeIndex = this.#puzzle?.theme ?? 0;
-    const ports = DIRECTIONS.filter((direction) => (projected.tile.baseMask & direction.bit) !== 0);
-    const oppositePair =
-      ports.length === 2 &&
-      ((ports[0]?.bit === 1 && ports[1]?.bit === 4) ||
-        (ports[0]?.bit === 4 && ports[1]?.bit === 1) ||
-        (ports[0]?.bit === 2 && ports[1]?.bit === 8) ||
-        (ports[0]?.bit === 8 && ports[1]?.bit === 2));
-    // The physical assembly now reflects the topology it controls: terminal,
+    // The physical assembly reflects the topology it controls: terminal,
     // straight regulator, elbow escapement, or multi-way distributor.
-    const variant = ports.length <= 1 ? 0 : oppositePair ? 1 : ports.length === 2 ? 2 : 3;
-    const art = this.#art.mechanism(themeIndex, theme, this.#profile.quality, variant);
-    const targetOuter = projected.tileWidth * 0.148;
-    const scale = targetOuter / 112;
+    const variant = mechanismVariant(projected.tile);
     const spin = this.#reducedMotion ? 0 : time * 0.00018 * (0.34 + normalizedPower * 0.9) * (variant % 2 ? -1 : 1);
+    const premiumMechanism = this.#profile.quality === 'high' ? this.#premiumSprite(mechanismSpriteKey(projected.tile)) : null;
 
-    context.save();
-    context.translate(center.x, center.y);
-    context.rotate(spin);
-    context.drawImage(
-      art.image,
-      -art.dimensions.anchorX * scale,
-      -art.dimensions.anchorY * scale,
-      art.dimensions.width * scale,
-      art.dimensions.height * scale,
-    );
-    const premiumMechanism = this.#profile.quality === 'high' ? this.#premiumSprite('mechanism') : null;
     if (premiumMechanism) {
-      const spriteSize = projected.tileWidth * 0.47;
-      context.globalAlpha = 0.16 + normalizedPower * 0.16;
-      context.globalCompositeOperation = normalizedPower > 0.1 ? 'screen' : 'soft-light';
-      context.drawImage(premiumMechanism, -spriteSize / 2, -spriteSize / 2, spriteSize, spriteSize);
+      // Cinematic mode treats the high-resolution sprite as the authoritative shell.
+      // The old cached vector assembly is deliberately not drawn underneath: stacking
+      // both was the main reason the live board looked flatter and noisier than the art.
+      const spriteSize = projected.tileWidth * 0.60;
+      context.save();
+      if (this.#profile.useExpensiveShadows) {
+        context.shadowColor = normalizedPower > 0.08 ? withAlpha(theme.aquaSoft, 0.30) : 'rgba(0,0,0,.58)';
+        context.shadowBlur = projected.tileWidth * (0.045 + normalizedPower * 0.035);
+        context.shadowOffsetY = projected.tileHeight * 0.035;
+      }
+      context.globalAlpha = 0.99;
+      context.drawImage(
+        premiumMechanism,
+        center.x - spriteSize / 2,
+        center.y - spriteSize * 0.515,
+        spriteSize,
+        spriteSize,
+      );
+      context.restore();
+    } else {
+      const art = this.#art.mechanism(themeIndex, theme, this.#profile.quality, variant);
+      const targetOuter = projected.tileWidth * 0.148;
+      const scale = targetOuter / 112;
+      context.save();
+      context.translate(center.x, center.y);
+      context.rotate(spin);
+      context.drawImage(
+        art.image,
+        -art.dimensions.anchorX * scale,
+        -art.dimensions.anchorY * scale,
+        art.dimensions.width * scale,
+        art.dimensions.height * scale,
+      );
+      context.restore();
     }
-    context.restore();
 
-    // Independent counter-rotating dial and jeweled aether core.
-    const radius = projected.tileWidth * 0.104;
+    if (this.#renderingStatic && premiumMechanism) return;
+
+    // Independent counter-rotating dial and jeweled aether core remain live so the
+    // detailed shell reacts immediately to power without swapping a static screenshot.
+    const radius = projected.tileWidth * (premiumMechanism ? 0.071 : 0.104);
     context.save();
     context.translate(center.x, center.y);
     context.rotate(-spin * 1.7);
-    context.strokeStyle = withAlpha(theme.brassLight, 0.78);
-    context.lineWidth = Math.max(1.2, radius * 0.075);
-    context.setLineDash(this.#profile.quality === 'high' ? [radius * 0.20, radius * 0.11] : []);
+    context.strokeStyle = withAlpha(theme.brassLight, premiumMechanism ? 0.42 : 0.78);
+    context.lineWidth = Math.max(1.05, radius * (premiumMechanism ? 0.052 : 0.075));
+    context.setLineDash(this.#profile.quality === 'high' ? [radius * 0.18, radius * 0.13] : []);
     context.beginPath();
     context.arc(0, 0, radius * 0.72, 0, Math.PI * 2);
     context.stroke();
@@ -1240,7 +1702,7 @@ export class ConservatoryRenderer {
 
     context.save();
     if (premiumSource) {
-      premiumSize = projected.tileWidth * 0.57;
+      premiumSize = projected.tileWidth * 0.72;
       if (this.#profile.useExpensiveShadows) {
         context.shadowColor = 'rgba(0,0,0,.62)';
         context.shadowBlur = projected.tileWidth * 0.06;
@@ -1249,7 +1711,7 @@ export class ConservatoryRenderer {
       context.drawImage(
         premiumSource,
         center.x - premiumSize / 2,
-        baseY - premiumSize * 0.80,
+        baseY - premiumSize * 0.92,
         premiumSize,
         premiumSize,
       );
@@ -1264,8 +1726,10 @@ export class ConservatoryRenderer {
     }
     context.restore();
 
-    const radius = projected.tileWidth * 0.112;
-    const orbY = baseY - (premiumSource ? premiumSize * 0.29 : projected.tileHeight * 0.20);
+    if (this.#renderingStatic && premiumSource) return;
+
+    const radius = projected.tileWidth * (premiumSource ? 0.098 : 0.112);
+    const orbY = baseY - (premiumSource ? premiumSize * 0.53 : projected.tileHeight * 0.20);
     const pulse = this.#reducedMotion ? 1 : 0.9 + Math.sin(time * 0.0046) * 0.1;
     const orb = context.createRadialGradient(
       center.x - radius * 0.32,
@@ -1376,35 +1840,46 @@ export class ConservatoryRenderer {
     const scale = targetPotWidth / 114;
     const potBaseY = center.y + projected.tileHeight * 0.235;
     const variant = (projected.tile.x * 5 + projected.tile.y * 9) % 4;
-    const sway = this.#reducedMotion ? 0 : Math.sin(time * 0.0017 + projected.tile.x * 0.81 + projected.tile.y * 0.43) * (0.015 + normalizedPower * 0.035);
+    const sway = this.#reducedMotion || this.#renderingStatic ? 0 : Math.sin(time * 0.0017 + projected.tile.x * 0.81 + projected.tile.y * 0.43) * (0.015 + normalizedPower * 0.035);
     const hasCloche = this.#profile.quality === 'high' && (variant === 0 || kind === 'mist-lily');
+    const useCinematicPlant = this.#profile.quality === 'high';
 
     // Selected specimens use a hand-rendered transparent cloche sprite with
     // separate dormant and illuminated states. Cross-fading the pair preserves
     // the real gameplay bloom transition instead of swapping a static picture.
-    if (hasCloche) {
+    if (useCinematicPlant) {
       const [offKey, onKey] = PLANT_SPRITES[kind];
       const offSprite = this.#premiumSprite(offKey);
       const onSprite = this.#premiumSprite(onKey);
       if (offSprite && onSprite) {
-        const spriteSize = projected.tileWidth * 0.68;
-        const spriteX = center.x - spriteSize / 2;
-        const spriteY = potBaseY - spriteSize * 0.84;
+        const spriteWidth = projected.tileWidth * 0.54;
+        const spriteScale = spriteWidth / Math.max(1, offSprite.naturalWidth);
+        const spriteHeight = offSprite.naturalHeight * spriteScale;
+        const spriteX = center.x - spriteWidth / 2;
+        const spriteY = potBaseY - spriteHeight * 0.87;
         context.save();
         context.translate(center.x, potBaseY);
-        context.rotate(sway * 0.18);
+        context.rotate(sway * 0.14);
         context.translate(-center.x, -potBaseY);
         if (this.#profile.useExpensiveShadows) {
           context.shadowColor = normalizedPower > 0.18 ? palette[2] : 'rgba(0,0,0,.58)';
-          context.shadowBlur = projected.tileWidth * (0.045 + normalizedPower * 0.06);
+          context.shadowBlur = projected.tileWidth * (0.028 + normalizedPower * 0.035);
           context.shadowOffsetY = projected.tileHeight * 0.025;
         }
         context.globalAlpha = 1;
-        context.drawImage(offSprite, spriteX, spriteY, spriteSize, spriteSize);
-        context.globalAlpha = normalizedPower * normalizedPower * (3 - 2 * normalizedPower);
-        context.globalCompositeOperation = normalizedPower > 0.42 ? 'screen' : 'source-over';
-        context.drawImage(onSprite, spriteX, spriteY, spriteSize, spriteSize);
+        context.drawImage(offSprite, spriteX, spriteY, spriteWidth, spriteHeight);
+        const bloom = normalizedPower * normalizedPower * (3 - 2 * normalizedPower);
+        context.globalAlpha = bloom;
+        context.globalCompositeOperation = 'source-over';
+        context.drawImage(onSprite, spriteX, spriteY, spriteWidth, spriteHeight);
+        if (bloom > 0.12) {
+          context.globalAlpha = bloom * 0.09;
+          context.globalCompositeOperation = 'screen';
+          context.drawImage(onSprite, spriteX, spriteY, spriteWidth, spriteHeight);
+        }
         context.restore();
+
+        if (this.#renderingStatic) return;
 
         if (!this.#reducedMotion && normalizedPower > 0.35) {
           context.save();
@@ -1630,9 +2105,9 @@ export class ConservatoryRenderer {
     context.strokeStyle = strong ? theme.accent : theme.brassLight;
     if (this.#profile.useExpensiveShadows) {
       context.shadowColor = strong ? theme.accent : theme.brassLight;
-      context.shadowBlur = tileWidth * (strong ? 0.16 : 0.09) * pulse;
+      context.shadowBlur = tileWidth * (strong ? 0.105 : 0.065) * pulse;
     }
-    context.lineWidth = Math.max(2, tileWidth * (strong ? 0.026 : 0.018));
+    context.lineWidth = Math.max(1.5, tileWidth * (strong ? 0.017 : 0.012));
     pathPolygon(context, polygon);
     context.stroke();
     if (strong) {
