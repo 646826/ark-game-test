@@ -1,0 +1,398 @@
+{
+  "name": "Clockwork Conservatory: Bloom Circuit",
+  "version": "1.3.0",
+  "generatedAt": "2026-08-04T21:33:41.708Z",
+  "initialBytes": 4421194,
+  "totalBytes": 4716832,
+  "breakdown": {
+    "html": 1258,
+    "css": 84120,
+    "javascript": 279836,
+    "assets": 4055980,
+    "maps": 295638,
+    "total": 4716832
+  },
+  "files": [
+    {
+      "path": "assets/ambient-game-ultra.webp",
+      "bytes": 112206
+    },
+    {
+      "path": "assets/ambient-game.webp",
+      "bytes": 58732
+    },
+    {
+      "path": "assets/ambient-map-ultra.webp",
+      "bytes": 129990
+    },
+    {
+      "path": "assets/ambient-map.webp",
+      "bytes": 66926
+    },
+    {
+      "path": "assets/ambient-menu-ultra.webp",
+      "bytes": 110998
+    },
+    {
+      "path": "assets/ambient-menu.webp",
+      "bytes": 54090
+    },
+    {
+      "path": "assets/ambient-mobile-ultra.webp",
+      "bytes": 88996
+    },
+    {
+      "path": "assets/ambient-mobile.webp",
+      "bytes": 59730
+    },
+    {
+      "path": "assets/ambient-victory-ultra.webp",
+      "bytes": 173144
+    },
+    {
+      "path": "assets/ambient-victory.webp",
+      "bytes": 87064
+    },
+    {
+      "path": "assets/cinematic/coupler.webp",
+      "bytes": 32494
+    },
+    {
+      "path": "assets/cinematic/leak.webp",
+      "bytes": 77078
+    },
+    {
+      "path": "assets/cinematic/lock.webp",
+      "bytes": 36546
+    },
+    {
+      "path": "assets/cinematic/mechanism-elbow.webp",
+      "bytes": 59556
+    },
+    {
+      "path": "assets/cinematic/mechanism-junction.webp",
+      "bytes": 60536
+    },
+    {
+      "path": "assets/cinematic/mechanism-straight.webp",
+      "bytes": 60368
+    },
+    {
+      "path": "assets/cinematic/mechanism-terminal.webp",
+      "bytes": 60398
+    },
+    {
+      "path": "assets/cinematic/pipe.webp",
+      "bytes": 34444
+    },
+    {
+      "path": "assets/cinematic/plant-ember-bloom-off.webp",
+      "bytes": 55358
+    },
+    {
+      "path": "assets/cinematic/plant-ember-bloom-on.webp",
+      "bytes": 71084
+    },
+    {
+      "path": "assets/cinematic/plant-lumen-orchid-off.webp",
+      "bytes": 67952
+    },
+    {
+      "path": "assets/cinematic/plant-lumen-orchid-on.webp",
+      "bytes": 82648
+    },
+    {
+      "path": "assets/cinematic/plant-mist-lily-off.webp",
+      "bytes": 67962
+    },
+    {
+      "path": "assets/cinematic/plant-mist-lily-on.webp",
+      "bytes": 83472
+    },
+    {
+      "path": "assets/cinematic/plant-moonbell-off.webp",
+      "bytes": 72934
+    },
+    {
+      "path": "assets/cinematic/plant-moonbell-on.webp",
+      "bytes": 92024
+    },
+    {
+      "path": "assets/cinematic/plant-sun-dahlia-off.webp",
+      "bytes": 69936
+    },
+    {
+      "path": "assets/cinematic/plant-sun-dahlia-on.webp",
+      "bytes": 87042
+    },
+    {
+      "path": "assets/cinematic/platform-0.webp",
+      "bytes": 223278
+    },
+    {
+      "path": "assets/cinematic/platform-1.webp",
+      "bytes": 223896
+    },
+    {
+      "path": "assets/cinematic/platform-2.webp",
+      "bytes": 225230
+    },
+    {
+      "path": "assets/cinematic/platform-3.webp",
+      "bytes": 225850
+    },
+    {
+      "path": "assets/cinematic/source.webp",
+      "bytes": 101846
+    },
+    {
+      "path": "assets/hd/botanical-crest.webp",
+      "bytes": 57918
+    },
+    {
+      "path": "assets/hd/coupler.webp",
+      "bytes": 20238
+    },
+    {
+      "path": "assets/hd/dome-complete.webp",
+      "bytes": 58238
+    },
+    {
+      "path": "assets/hd/dome-current.webp",
+      "bytes": 67154
+    },
+    {
+      "path": "assets/hd/dome-locked.webp",
+      "bytes": 42888
+    },
+    {
+      "path": "assets/hd/leak.webp",
+      "bytes": 35640
+    },
+    {
+      "path": "assets/hd/lock.webp",
+      "bytes": 20794
+    },
+    {
+      "path": "assets/hd/mechanism.webp",
+      "bytes": 43834
+    },
+    {
+      "path": "assets/hd/plant-ember-bloom-off.webp",
+      "bytes": 34138
+    },
+    {
+      "path": "assets/hd/plant-ember-bloom-on.webp",
+      "bytes": 51132
+    },
+    {
+      "path": "assets/hd/plant-lumen-orchid-off.webp",
+      "bytes": 33694
+    },
+    {
+      "path": "assets/hd/plant-lumen-orchid-on.webp",
+      "bytes": 50878
+    },
+    {
+      "path": "assets/hd/plant-mist-lily-off.webp",
+      "bytes": 34330
+    },
+    {
+      "path": "assets/hd/plant-mist-lily-on.webp",
+      "bytes": 51314
+    },
+    {
+      "path": "assets/hd/plant-moonbell-off.webp",
+      "bytes": 33428
+    },
+    {
+      "path": "assets/hd/plant-moonbell-on.webp",
+      "bytes": 50134
+    },
+    {
+      "path": "assets/hd/plant-sun-dahlia-off.webp",
+      "bytes": 32552
+    },
+    {
+      "path": "assets/hd/plant-sun-dahlia-on.webp",
+      "bytes": 51902
+    },
+    {
+      "path": "assets/hd/reward-chest.webp",
+      "bytes": 23308
+    },
+    {
+      "path": "assets/hd/source.webp",
+      "bytes": 56714
+    },
+    {
+      "path": "assets/hd/tile-base.webp",
+      "bytes": 44962
+    },
+    {
+      "path": "assets/noise.png",
+      "bytes": 16580
+    },
+    {
+      "path": "assets/specimen-1.webp",
+      "bytes": 5566
+    },
+    {
+      "path": "assets/specimen-2.webp",
+      "bytes": 5792
+    },
+    {
+      "path": "assets/specimen-3.webp",
+      "bytes": 6532
+    },
+    {
+      "path": "assets/specimen-4.webp",
+      "bytes": 6014
+    },
+    {
+      "path": "assets/specimen-5.webp",
+      "bytes": 5730
+    },
+    {
+      "path": "favicon.svg",
+      "bytes": 557
+    },
+    {
+      "path": "index.html",
+      "bytes": 1258
+    },
+    {
+      "path": "manifest.webmanifest",
+      "bytes": 211
+    },
+    {
+      "path": "src/core/board.js",
+      "bytes": 4884
+    },
+    {
+      "path": "src/core/board.js.map",
+      "bytes": 5973
+    },
+    {
+      "path": "src/core/generator.js",
+      "bytes": 6032
+    },
+    {
+      "path": "src/core/generator.js.map",
+      "bytes": 8517
+    },
+    {
+      "path": "src/core/performance.js",
+      "bytes": 3426
+    },
+    {
+      "path": "src/core/performance.js.map",
+      "bytes": 3898
+    },
+    {
+      "path": "src/core/progress.js",
+      "bytes": 4882
+    },
+    {
+      "path": "src/core/progress.js.map",
+      "bytes": 5469
+    },
+    {
+      "path": "src/core/random.js",
+      "bytes": 1337
+    },
+    {
+      "path": "src/core/random.js.map",
+      "bytes": 1837
+    },
+    {
+      "path": "src/core/scoring.js",
+      "bytes": 744
+    },
+    {
+      "path": "src/core/scoring.js.map",
+      "bytes": 1138
+    },
+    {
+      "path": "src/core/tutorial.js",
+      "bytes": 2225
+    },
+    {
+      "path": "src/core/tutorial.js.map",
+      "bytes": 2451
+    },
+    {
+      "path": "src/core/types.js",
+      "bytes": 360
+    },
+    {
+      "path": "src/core/types.js.map",
+      "bytes": 691
+    },
+    {
+      "path": "src/game/art.js",
+      "bytes": 29829
+    },
+    {
+      "path": "src/game/art.js.map",
+      "bytes": 38844
+    },
+    {
+      "path": "src/game/audio.js",
+      "bytes": 6324
+    },
+    {
+      "path": "src/game/audio.js.map",
+      "bytes": 7386
+    },
+    {
+      "path": "src/game/game.js",
+      "bytes": 79992
+    },
+    {
+      "path": "src/game/game.js.map",
+      "bytes": 69209
+    },
+    {
+      "path": "src/game/renderer.js",
+      "bytes": 117344
+    },
+    {
+      "path": "src/game/renderer.js.map",
+      "bytes": 132056
+    },
+    {
+      "path": "src/main.js",
+      "bytes": 993
+    },
+    {
+      "path": "src/main.js.map",
+      "bytes": 897
+    },
+    {
+      "path": "src/platform/arkadium.js",
+      "bytes": 10322
+    },
+    {
+      "path": "src/platform/arkadium.js.map",
+      "bytes": 10188
+    },
+    {
+      "path": "src/styles.css",
+      "bytes": 84120
+    },
+    {
+      "path": "src/ui/i18n.js",
+      "bytes": 11142
+    },
+    {
+      "path": "src/ui/i18n.js.map",
+      "bytes": 7084
+    }
+  ],
+  "budgets": {
+    "initialBytes": 15000000,
+    "totalBytes": 100000000,
+    "pass": true
+  }
+}
