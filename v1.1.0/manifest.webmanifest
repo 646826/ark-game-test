@@ -1,0 +1,9 @@
+{
+  "name": "Clockwork Conservatory: Bloom Circuit",
+  "short_name": "Bloom Circuit",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#031817",
+  "theme_color": "#052724",
+  "icons": []
+}

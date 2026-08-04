@@ -1,0 +1,194 @@
+{
+  "name": "Clockwork Conservatory: Bloom Circuit",
+  "version": "1.1.0",
+  "generatedAt": "2026-08-04T15:43:49.912Z",
+  "initialBytes": 619554,
+  "totalBytes": 828070,
+  "breakdown": {
+    "html": 1246,
+    "css": 48854,
+    "javascript": 195930,
+    "assets": 373524,
+    "maps": 208516,
+    "total": 828070
+  },
+  "files": [
+    {
+      "path": "assets/ambient-game.webp",
+      "bytes": 58732
+    },
+    {
+      "path": "assets/ambient-map.webp",
+      "bytes": 66926
+    },
+    {
+      "path": "assets/ambient-menu.webp",
+      "bytes": 54090
+    },
+    {
+      "path": "assets/ambient-mobile.webp",
+      "bytes": 59730
+    },
+    {
+      "path": "assets/ambient-victory.webp",
+      "bytes": 87064
+    },
+    {
+      "path": "assets/noise.png",
+      "bytes": 16580
+    },
+    {
+      "path": "assets/specimen-1.webp",
+      "bytes": 5566
+    },
+    {
+      "path": "assets/specimen-2.webp",
+      "bytes": 5792
+    },
+    {
+      "path": "assets/specimen-3.webp",
+      "bytes": 6532
+    },
+    {
+      "path": "assets/specimen-4.webp",
+      "bytes": 6014
+    },
+    {
+      "path": "assets/specimen-5.webp",
+      "bytes": 5730
+    },
+    {
+      "path": "favicon.svg",
+      "bytes": 557
+    },
+    {
+      "path": "index.html",
+      "bytes": 1246
+    },
+    {
+      "path": "manifest.webmanifest",
+      "bytes": 211
+    },
+    {
+      "path": "src/core/board.js",
+      "bytes": 4884
+    },
+    {
+      "path": "src/core/board.js.map",
+      "bytes": 5973
+    },
+    {
+      "path": "src/core/generator.js",
+      "bytes": 6032
+    },
+    {
+      "path": "src/core/generator.js.map",
+      "bytes": 8517
+    },
+    {
+      "path": "src/core/performance.js",
+      "bytes": 3424
+    },
+    {
+      "path": "src/core/performance.js.map",
+      "bytes": 3898
+    },
+    {
+      "path": "src/core/progress.js",
+      "bytes": 4882
+    },
+    {
+      "path": "src/core/progress.js.map",
+      "bytes": 5469
+    },
+    {
+      "path": "src/core/random.js",
+      "bytes": 1337
+    },
+    {
+      "path": "src/core/random.js.map",
+      "bytes": 1837
+    },
+    {
+      "path": "src/core/scoring.js",
+      "bytes": 744
+    },
+    {
+      "path": "src/core/scoring.js.map",
+      "bytes": 1138
+    },
+    {
+      "path": "src/core/tutorial.js",
+      "bytes": 2225
+    },
+    {
+      "path": "src/core/tutorial.js.map",
+      "bytes": 2451
+    },
+    {
+      "path": "src/core/types.js",
+      "bytes": 360
+    },
+    {
+      "path": "src/core/types.js.map",
+      "bytes": 691
+    },
+    {
+      "path": "src/game/audio.js",
+      "bytes": 6324
+    },
+    {
+      "path": "src/game/audio.js.map",
+      "bytes": 7386
+    },
+    {
+      "path": "src/game/game.js",
+      "bytes": 71239
+    },
+    {
+      "path": "src/game/game.js.map",
+      "bytes": 65095
+    },
+    {
+      "path": "src/game/renderer.js",
+      "bytes": 72022
+    },
+    {
+      "path": "src/game/renderer.js.map",
+      "bytes": 87892
+    },
+    {
+      "path": "src/main.js",
+      "bytes": 993
+    },
+    {
+      "path": "src/main.js.map",
+      "bytes": 897
+    },
+    {
+      "path": "src/platform/arkadium.js",
+      "bytes": 10322
+    },
+    {
+      "path": "src/platform/arkadium.js.map",
+      "bytes": 10188
+    },
+    {
+      "path": "src/styles.css",
+      "bytes": 48854
+    },
+    {
+      "path": "src/ui/i18n.js",
+      "bytes": 11142
+    },
+    {
+      "path": "src/ui/i18n.js.map",
+      "bytes": 7084
+    }
+  ],
+  "budgets": {
+    "initialBytes": 15000000,
+    "totalBytes": 100000000,
+    "pass": true
+  }
+}
