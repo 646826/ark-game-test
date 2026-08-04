@@ -1,5 +1,6 @@
 import { currentMask } from '../core/board.js';
 import { detectDeviceSignals, fitDevicePixelRatio, resolveRenderProfile, shouldAutoDowngrade, type RenderProfile } from '../core/performance.js';
+import { ConservatoryArtCache } from './art.js';
 import {
   DIRECTIONS,
   EAST,
@@ -40,6 +41,23 @@ interface PendingBurst { tileId: string; start: number; kind: 'bloom' | 'seal' }
 interface Dust { x: number; y: number; phase: number; speed: number; size: number }
 interface PowerTransition { from: number; to: number; start: number; duration: number }
 interface ImpactPulse { start: number; duration: number; strength: number; kind: 'turn' | 'power' | 'hint' }
+type PremiumSpriteKey =
+  | 'coupler'
+  | 'leak'
+  | 'lock'
+  | 'mechanism'
+  | 'source'
+  | 'tile-base'
+  | 'plant-lumen-orchid-off'
+  | 'plant-lumen-orchid-on'
+  | 'plant-moonbell-off'
+  | 'plant-moonbell-on'
+  | 'plant-sun-dahlia-off'
+  | 'plant-sun-dahlia-on'
+  | 'plant-mist-lily-off'
+  | 'plant-mist-lily-on'
+  | 'plant-ember-bloom-off'
+  | 'plant-ember-bloom-on';
 export interface RendererDiagnostics {
   readonly quality: 'high' | 'balanced';
   readonly adaptive: boolean;
@@ -85,9 +103,22 @@ const PLANT_PALETTES: Record<PlantKind, readonly [string, string, string]> = {
   'ember-bloom': ['#ff9d53', '#ffd05d', '#ff6e75'],
 };
 
+const CORE_PREMIUM_SPRITES: readonly PremiumSpriteKey[] = ['leak', 'lock'] as const;
+
+const PLANT_SPRITES: Record<PlantKind, readonly [PremiumSpriteKey, PremiumSpriteKey]> = {
+  'lumen-orchid': ['plant-lumen-orchid-off', 'plant-lumen-orchid-on'],
+  moonbell: ['plant-moonbell-off', 'plant-moonbell-on'],
+  'sun-dahlia': ['plant-sun-dahlia-off', 'plant-sun-dahlia-on'],
+  'mist-lily': ['plant-mist-lily-off', 'plant-mist-lily-on'],
+  'ember-bloom': ['plant-ember-bloom-off', 'plant-ember-bloom-on'],
+};
+
 export class ConservatoryRenderer {
   readonly #canvas: HTMLCanvasElement;
   readonly #context: CanvasRenderingContext2D;
+  readonly #art = new ConservatoryArtCache();
+  readonly #sprites = new Map<PremiumSpriteKey, HTMLImageElement>();
+  readonly #readySprites = new Set<PremiumSpriteKey>();
   readonly #onWindowResize = (): void => this.#queueResize();
   #observer: ResizeObserver | null = null;
   #resizeFrame = 0;
@@ -121,8 +152,9 @@ export class ConservatoryRenderer {
   #targetParallax = { x: 0, y: 0 };
   #reducedMotion = false;
   #highContrast = false;
-  #profile: RenderProfile = resolveRenderProfile('high', detectDeviceSignals());
+  #profile: RenderProfile = resolveRenderProfile('auto', detectDeviceSignals());
   #profileAppliedAt = performance.now();
+  #assetWarmupUntil = 0;
   #adaptiveDowngraded = false;
   #drawSamples: number[] = [];
   #loadSamples: number[] = [];
@@ -160,6 +192,11 @@ export class ConservatoryRenderer {
     cancelAnimationFrame(this.#resizeFrame);
     this.#observer?.disconnect();
     window.removeEventListener('resize', this.#onWindowResize);
+    for (const sprite of this.#sprites.values()) {
+      sprite.onload = null;
+      sprite.onerror = null;
+    }
+    this.#readySprites.clear();
   }
 
   public clearPuzzle(): void {
@@ -199,6 +236,7 @@ export class ConservatoryRenderer {
     this.#victoryStart = 0;
     this.#victoryEnd = 0;
     this.#projectionDirty = true;
+    this.#ensurePremiumSprites(this.#profile.quality === 'high' ? this.#premiumSpritesForPuzzle(puzzle) : CORE_PREMIUM_SPRITES);
     this.#invalidate(1_200);
   }
 
@@ -356,6 +394,8 @@ export class ConservatoryRenderer {
     this.#drawSamples = [];
     this.#loadSamples = [];
     if (changed) {
+      this.#art.clear();
+      if (profile.quality === 'high' && this.#puzzle) this.#ensurePremiumSprites(this.#premiumSpritesForPuzzle(this.#puzzle));
       this.#createDust();
       this.resize();
       this.#invalidate(700);
@@ -448,6 +488,64 @@ export class ConservatoryRenderer {
       if (pointInPolygon(point, projected.polygon)) return projected.tile.id;
     }
     return null;
+  }
+
+  #premiumSpritesForPuzzle(puzzle: PuzzleDefinition): PremiumSpriteKey[] {
+    const keys = new Set<PremiumSpriteKey>(['coupler', 'leak', 'lock', 'mechanism', 'source', 'tile-base']);
+    for (const tile of puzzle.tiles) {
+      if (tile.kind !== 'plant' || !tile.plantKind) continue;
+      const [off, on] = PLANT_SPRITES[tile.plantKind];
+      keys.add(off);
+      keys.add(on);
+    }
+    return [...keys];
+  }
+
+  #ensurePremiumSprites(keys: readonly PremiumSpriteKey[]): void {
+    const missing = keys.filter((key) => !this.#sprites.has(key));
+    if (missing.length === 0) return;
+
+    // Loading and first-decoding illustrated WebP art can create one-time main-thread
+    // spikes on mobile. Keep the adaptive governor in warm-up until the assets have
+    // settled so a capable device is not permanently downgraded because of startup I/O.
+    const now = performance.now();
+    this.#assetWarmupUntil = Math.max(this.#assetWarmupUntil, now + 6_000);
+    this.#loadSamples = [];
+
+    for (const key of missing) {
+      const image = new Image();
+      image.decoding = 'async';
+      image.loading = 'eager';
+      image.onload = (): void => {
+        const settle = (): void => {
+          this.#readySprites.add(key);
+          this.#assetWarmupUntil = Math.max(this.#assetWarmupUntil, performance.now() + 1_500);
+          this.#loadSamples = [];
+          this.#invalidate(520);
+        };
+        try {
+          void image.decode().catch(() => undefined).finally(settle);
+        } catch {
+          settle();
+        }
+      };
+      image.onerror = (): void => {
+        // Procedural cached art remains the guaranteed fallback.
+        this.#sprites.delete(key);
+        this.#readySprites.delete(key);
+        this.#assetWarmupUntil = Math.max(this.#assetWarmupUntil, performance.now() + 500);
+        this.#loadSamples = [];
+        this.#invalidate();
+      };
+      image.src = `./assets/hd/${key}.webp`;
+      this.#sprites.set(key, image);
+    }
+  }
+
+  #premiumSprite(key: PremiumSpriteKey): HTMLImageElement | null {
+    if (!this.#readySprites.has(key)) return null;
+    const image = this.#sprites.get(key);
+    return image?.complete && image.naturalWidth > 0 ? image : null;
   }
 
   #queueResize(): void {
@@ -581,14 +679,18 @@ export class ConservatoryRenderer {
   #recordDrawCost(cost: number, time: number, underLoad: boolean): void {
     this.#drawSamples.push(cost);
     if (this.#drawSamples.length > 240) this.#drawSamples.splice(0, this.#drawSamples.length - 240);
-    if (underLoad) {
+    const eligibleLoadSample = underLoad && time >= this.#assetWarmupUntil;
+    if (eligibleLoadSample) {
       this.#loadSamples.push(cost);
       if (this.#loadSamples.length > 180) this.#loadSamples.splice(0, this.#loadSamples.length - 180);
+    } else if (time < this.#assetWarmupUntil && this.#loadSamples.length > 0) {
+      this.#loadSamples = [];
     }
-    if (!underLoad || !this.#profile.adaptive || this.#profile.quality !== 'high' || this.#adaptiveDowngraded || time - this.#profileAppliedAt < 4_500) return;
+    if (!eligibleLoadSample || !this.#profile.adaptive || this.#profile.quality !== 'high' || this.#adaptiveDowngraded || time - this.#profileAppliedAt < 4_500) return;
     if (!shouldAutoDowngrade(this.#loadSamples)) return;
     this.#adaptiveDowngraded = true;
     this.#profile = { ...resolveRenderProfile('balanced', detectDeviceSignals()), adaptive: true };
+    this.#art.clear();
     this.#profileAppliedAt = time;
     this.#drawSamples = [];
     this.#loadSamples = [];
@@ -680,11 +782,25 @@ export class ConservatoryRenderer {
 
   #projectBoard(puzzle: PuzzleDefinition): ProjectedTile[] {
     const portrait = this.#height > this.#width * 1.14;
-    const topReserve = portrait ? Math.min(285, this.#height * 0.22) : Math.min(126, this.#height * 0.18);
-    const bottomReserve = portrait ? Math.min(245, this.#height * 0.18) : Math.min(128, this.#height * 0.18);
+    // The full desktop cockpit deliberately reserves real layout space for both
+    // objective rails. This keeps every interactive tile unobstructed rather than
+    // merely drawing UI over the outer rows of the puzzle.
+    const cockpit = !portrait && this.#width >= 1180 && this.#height >= 610;
+    const topReserve = portrait
+      ? Math.min(285, this.#height * 0.22)
+      : cockpit
+        ? Math.min(112, this.#height * 0.14)
+        : Math.min(126, this.#height * 0.18);
+    const bottomReserve = portrait
+      ? Math.min(245, this.#height * 0.18)
+      : cockpit
+        ? Math.min(116, this.#height * 0.14)
+        : Math.min(128, this.#height * 0.18);
+    const sideLeft = cockpit ? Math.max(304, this.#width * 0.195) : this.#width * (portrait ? 0.035 : 0.055);
+    const sideRight = cockpit ? Math.max(262, this.#width * 0.172) : this.#width * (portrait ? 0.035 : 0.055);
     const available = {
-      left: this.#width * (portrait ? 0.035 : 0.055),
-      right: this.#width * (portrait ? 0.965 : 0.945),
+      left: sideLeft,
+      right: this.#width - sideRight,
       top: topReserve,
       bottom: this.#height - bottomReserve,
     };
@@ -762,83 +878,90 @@ export class ConservatoryRenderer {
     const baseLift = selected || hovered || coached || hinted ? Math.max(2, tileHeight * 0.045) : 0;
     const lift = pressed ? Math.max(0, baseLift - tileHeight * 0.035) : baseLift;
     const topPolygon = polygon.map((point) => ({ x: point.x, y: point.y - lift })) as [Point, Point, Point, Point];
-    const extrusion = tileHeight * 0.26;
-
     context.save();
-    context.shadowColor = 'rgba(0,0,0,.5)';
-    context.shadowBlur = this.#profile.useExpensiveShadows ? tileHeight * 0.24 : tileHeight * 0.08;
-    context.shadowOffsetY = tileHeight * 0.22;
-    pathPolygon(context, [topPolygon[3], topPolygon[2], { x: topPolygon[2].x, y: topPolygon[2].y + extrusion }, { x: topPolygon[3].x, y: topPolygon[3].y + extrusion }]);
-    context.fillStyle = theme.side;
-    context.fill();
-    pathPolygon(context, [topPolygon[1], topPolygon[2], { x: topPolygon[2].x, y: topPolygon[2].y + extrusion }, { x: topPolygon[1].x, y: topPolygon[1].y + extrusion }]);
-    if (this.#profile.quality === 'high') {
-      const sideGradient = context.createLinearGradient(topPolygon[1].x, topPolygon[1].y, topPolygon[2].x, topPolygon[2].y + extrusion);
-      sideGradient.addColorStop(0, '#173837');
-      sideGradient.addColorStop(1, '#061a1d');
-      context.fillStyle = sideGradient;
-    } else {
-      context.fillStyle = theme.side;
-    }
-    context.fill();
-    context.shadowColor = 'transparent';
+    const themeIndex = this.#puzzle?.theme ?? 0;
+    const artVariant = (tile.x * 3 + tile.y * 5 + tile.baseMask) & 3;
+    const platform = this.#art.platform(themeIndex, theme, this.#profile.quality, artVariant);
+    const platformScaleX = tileWidth / 500;
+    const platformScaleY = tileHeight / 250;
+    context.drawImage(
+      platform.image,
+      center.x - platform.dimensions.anchorX * platformScaleX,
+      center.y - lift - platform.dimensions.anchorY * platformScaleY,
+      platform.dimensions.width * platformScaleX,
+      platform.dimensions.height * platformScaleY,
+    );
 
-    pathPolygon(context, topPolygon);
-    if (this.#profile.quality === 'high') {
-      const topGradient = context.createLinearGradient(center.x, topPolygon[0].y, center.x, topPolygon[2].y);
-      topGradient.addColorStop(0, powered ? mixHex(theme.glass, theme.glassLight, clamp(power, 0, 1)) : theme.glass);
-      topGradient.addColorStop(1, powered ? mixHex(theme.ink, theme.glass, clamp(power, 0, 1)) : theme.ink);
-      context.fillStyle = topGradient;
-    } else {
-      context.fillStyle = powered ? mixHex(theme.glass, theme.glassLight, clamp(power * 0.64, 0, 1)) : theme.glass;
+    // A second hand-rendered plate is clipped to the interactive top surface. It
+    // contributes micro-rivets, etched geometry and a different glass grain without
+    // increasing per-frame vector work; the cached procedural extrusion remains the
+    // authoritative geometry and hit shape.
+    const premiumPlate = this.#profile.quality === 'high' ? this.#premiumSprite('tile-base') : null;
+    if (premiumPlate) {
+      const spriteScaleX = tileWidth / 452;
+      const spriteScaleY = tileHeight / 265;
+      context.save();
+      pathPolygon(context, topPolygon);
+      context.clip();
+      context.globalAlpha = 0.26;
+      context.globalCompositeOperation = 'soft-light';
+      context.drawImage(
+        premiumPlate,
+        center.x - 256 * spriteScaleX,
+        center.y - lift - 174 * spriteScaleY,
+        512 * spriteScaleX,
+        512 * spriteScaleY,
+      );
+      context.restore();
     }
-    context.fill();
-    context.strokeStyle = this.#highContrast ? '#f8fff4' : powered ? withAlpha(theme.aqua, 0.28 + clamp(power, 0, 1) * 0.38) : `${theme.edge}88`;
-    context.lineWidth = Math.max(1.1, tileWidth * 0.009);
-    context.stroke();
 
+    // Powered glass behaves like a real illuminated material rather than a flat
+    // color swap. The cached art remains crisp while this lightweight overlay is
+    // animated per tile.
+    if (powered || this.#highContrast) {
+      context.save();
+      pathPolygon(context, topPolygon);
+      context.clip();
+      const normalizedPower = clamp(power, 0, 1);
+      const glow = context.createRadialGradient(
+        center.x - tileWidth * 0.14,
+        center.y - lift - tileHeight * 0.20,
+        0,
+        center.x,
+        center.y - lift,
+        tileWidth * 0.55,
+      );
+      glow.addColorStop(0, withAlpha(theme.aqua, this.#highContrast ? 0.22 : 0.05 + normalizedPower * 0.18));
+      glow.addColorStop(0.56, withAlpha(theme.aquaSoft, this.#highContrast ? 0.12 : normalizedPower * 0.08));
+      glow.addColorStop(1, 'rgba(0,0,0,0)');
+      context.fillStyle = glow;
+      context.fillRect(center.x - tileWidth * 0.58, center.y - lift - tileHeight * 0.65, tileWidth * 1.16, tileHeight * 1.3);
+      context.globalCompositeOperation = 'screen';
+      context.strokeStyle = withAlpha(theme.aqua, this.#highContrast ? 0.72 : 0.16 + normalizedPower * 0.34);
+      context.lineWidth = Math.max(1.2, tileWidth * 0.009);
+      pathPolygon(context, insetDiamond({ x: center.x, y: center.y - lift }, tileWidth * 0.82, tileHeight * 0.70));
+      context.stroke();
+      context.restore();
+    }
+
+    // Tiny moving reflections make every plate feel individually polished.
     if (this.#profile.quality === 'high') {
       context.save();
       pathPolygon(context, topPolygon);
       context.clip();
-      const sheen = context.createLinearGradient(topPolygon[3].x, topPolygon[3].y, topPolygon[1].x, topPolygon[1].y);
+      const shimmerOffset = this.#reducedMotion ? 0.48 : (time * 0.000035 + artVariant * 0.19) % 1;
+      const shimmerX = center.x - tileWidth * 0.62 + shimmerOffset * tileWidth * 1.24;
+      const sheen = context.createLinearGradient(shimmerX - tileWidth * 0.18, center.y - tileHeight, shimmerX + tileWidth * 0.18, center.y + tileHeight);
       sheen.addColorStop(0, 'rgba(255,255,255,0)');
-      sheen.addColorStop(0.38, 'rgba(218,255,246,.025)');
-      sheen.addColorStop(0.5, powered ? withAlpha(theme.aqua, 0.12 * clamp(power, 0, 1)) : 'rgba(255,255,255,.085)');
-      sheen.addColorStop(0.64, 'rgba(255,255,255,.018)');
+      sheen.addColorStop(0.46, 'rgba(235,255,248,.015)');
+      sheen.addColorStop(0.5, powered ? withAlpha(theme.aqua, 0.13) : 'rgba(255,255,255,.095)');
+      sheen.addColorStop(0.54, 'rgba(235,255,248,.014)');
       sheen.addColorStop(1, 'rgba(255,255,255,0)');
       context.fillStyle = sheen;
-      context.fillRect(center.x - tileWidth * 0.58, center.y - tileHeight, tileWidth * 1.16, tileHeight * 2);
+      context.fillRect(center.x - tileWidth * 0.7, center.y - lift - tileHeight, tileWidth * 1.4, tileHeight * 2);
       context.restore();
-
-      context.strokeStyle = powered ? withAlpha(theme.aqua, 0.22 + clamp(power, 0, 1) * 0.18) : 'rgba(230,255,247,.18)';
-      context.lineWidth = Math.max(0.8, tileWidth * 0.006);
-      context.beginPath();
-      context.moveTo(topPolygon[3].x, topPolygon[3].y);
-      context.lineTo(topPolygon[0].x, topPolygon[0].y);
-      context.lineTo(topPolygon[1].x, topPolygon[1].y);
-      context.stroke();
     }
 
-    // Inner glass plate and engraved filigree.
-    const inset = insetDiamond({ x: center.x, y: center.y - lift }, tileWidth * 0.84, tileHeight * 0.80);
-    pathPolygon(context, inset);
-    context.fillStyle = powered ? withAlpha(theme.aquaSoft, 0.035 + clamp(power, 0, 1) * 0.055) : 'rgba(255,255,255,.025)';
-    context.fill();
-    context.strokeStyle = powered ? withAlpha(theme.aqua, 0.12 + clamp(power, 0, 1) * 0.18) : 'rgba(231, 255, 244, .10)';
-    context.lineWidth = 1;
-    context.stroke();
-    context.globalAlpha = 0.15;
-    context.strokeStyle = theme.brassLight;
-    context.beginPath();
-    context.moveTo(inset[0].x, inset[0].y + tileHeight * 0.14);
-    context.quadraticCurveTo(center.x, center.y - lift, inset[2].x, inset[2].y - tileHeight * 0.14);
-    context.moveTo(inset[3].x + tileWidth * 0.12, inset[3].y);
-    context.quadraticCurveTo(center.x, center.y - lift, inset[1].x - tileWidth * 0.12, inset[1].y);
-    context.stroke();
-    context.globalAlpha = 1;
-
-    this.#drawCornerRivets({ x: center.x, y: center.y - lift }, tileWidth, tileHeight, theme);
     this.#drawChannels(projected, { x: center.x, y: center.y - lift }, theme, power, time);
 
     if (tile.kind === 'source') this.#drawSource(projected, { x: center.x, y: center.y - lift }, theme, time);
@@ -886,12 +1009,12 @@ export class ConservatoryRenderer {
       const vector = this.#directionVector(direction.bit, turns, projected.tileWidth, projected.tileHeight);
       const end = { x: center.x + vector.x * 0.49, y: center.y + vector.y * 0.49 };
       const inner = { x: center.x + vector.x * 0.23, y: center.y + vector.y * 0.23 };
-      const width = Math.max(4.2, projected.tileWidth * 0.055);
+      const width = Math.max(3.4, projected.tileWidth * 0.043);
       context.save();
       context.lineCap = 'round';
       context.lineJoin = 'round';
       context.strokeStyle = '#4b2f1a';
-      context.lineWidth = width * 1.9;
+      context.lineWidth = width * 1.72;
       context.beginPath();
       context.moveTo(inner.x, inner.y);
       context.lineTo(end.x, end.y);
@@ -906,11 +1029,38 @@ export class ConservatoryRenderer {
       } else {
         context.strokeStyle = theme.brass;
       }
-      context.lineWidth = width * 1.25;
+      context.lineWidth = width * 1.08;
       context.stroke();
       context.strokeStyle = 'rgba(255, 238, 175, .45)';
-      context.lineWidth = width * 0.18;
+      context.lineWidth = width * 0.15;
       context.stroke();
+
+      // A recessed glass core and engraved compression collars prevent the
+      // channels from reading as flat brown lines at gameplay scale.
+      context.strokeStyle = powered ? withAlpha(theme.aquaSoft, 0.30 + normalizedPower * 0.20) : 'rgba(5, 34, 35, .86)';
+      context.lineWidth = width * 0.36;
+      context.stroke();
+      const pipeAngle = Math.atan2(vector.y, vector.x);
+      for (const collarT of (this.#profile.quality === 'high' ? [0.46, 0.76] : [0.66])) {
+        const collarX = inner.x + (end.x - inner.x) * collarT;
+        const collarY = inner.y + (end.y - inner.y) * collarT;
+        context.save();
+        context.translate(collarX, collarY);
+        context.rotate(pipeAngle);
+        const collar = context.createLinearGradient(0, -width, 0, width);
+        collar.addColorStop(0, '#fff0ae');
+        collar.addColorStop(0.22, theme.brassLight);
+        collar.addColorStop(0.53, theme.brass);
+        collar.addColorStop(0.82, '#5b351b');
+        collar.addColorStop(1, '#dba956');
+        context.fillStyle = collar;
+        context.strokeStyle = 'rgba(255,238,185,.52)';
+        context.lineWidth = Math.max(.65, width * .10);
+        roundedRect(context, -width * .24, -width * .70, width * .48, width * 1.40, width * .13);
+        context.fill();
+        context.stroke();
+        context.restore();
+      }
       if (powered) {
         if (this.#profile.useExpensiveShadows) {
           context.shadowColor = theme.aqua;
@@ -941,24 +1091,38 @@ export class ConservatoryRenderer {
           context.globalAlpha = 1;
         }
       }
-      // End coupling.
+      // End coupling. High-quality mode uses a pre-rendered brass jewel so the
+      // tiny connector still has readable rivets and material depth on retina screens.
       context.shadowBlur = 0;
-      context.fillStyle = '#271a12';
-      context.strokeStyle = theme.brass;
-      context.lineWidth = Math.max(1.5, width * 0.26);
-      context.beginPath();
-      context.ellipse(end.x, end.y, width * 0.75, width * 0.46, Math.atan2(vector.y, vector.x), 0, Math.PI * 2);
-      context.fill();
-      context.stroke();
-      if (powered) {
-        context.fillStyle = withAlpha(theme.aqua, 0.35 + normalizedPower * 0.65);
+      const coupler = powered && this.#profile.quality === 'high' ? this.#premiumSprite('coupler') : null;
+      if (coupler) {
+        const couplerSize = width * 3.7;
+        context.save();
+        context.globalAlpha = 0.78 + normalizedPower * 0.22;
         if (this.#profile.useExpensiveShadows) {
           context.shadowColor = theme.aqua;
-          context.shadowBlur = width * 1.8;
+          context.shadowBlur = width * 1.9;
         }
+        context.drawImage(coupler, end.x - couplerSize / 2, end.y - couplerSize / 2, couplerSize, couplerSize);
+        context.restore();
+      } else {
+        context.fillStyle = '#271a12';
+        context.strokeStyle = theme.brass;
+        context.lineWidth = Math.max(1.1, width * 0.22);
         context.beginPath();
-        context.ellipse(end.x, end.y, width * (0.2 + normalizedPower * 0.18), width * (0.1 + normalizedPower * 0.09), Math.atan2(vector.y, vector.x), 0, Math.PI * 2);
+        context.ellipse(end.x, end.y, width * 0.62, width * 0.39, Math.atan2(vector.y, vector.x), 0, Math.PI * 2);
         context.fill();
+        context.stroke();
+        if (powered) {
+          context.fillStyle = withAlpha(theme.aqua, 0.35 + normalizedPower * 0.65);
+          if (this.#profile.useExpensiveShadows) {
+            context.shadowColor = theme.aqua;
+            context.shadowBlur = width * 1.8;
+          }
+          context.beginPath();
+          context.ellipse(end.x, end.y, width * (0.17 + normalizedPower * 0.15), width * (0.08 + normalizedPower * 0.075), Math.atan2(vector.y, vector.x), 0, Math.PI * 2);
+          context.fill();
+        }
       }
       context.restore();
     }
@@ -966,206 +1130,452 @@ export class ConservatoryRenderer {
 
   #drawMechanism(projected: ProjectedTile, center: Point, theme: Theme, power: number, time: number): void {
     const context = this.#context;
-    const radius = projected.tileWidth * 0.105;
     const normalizedPower = clamp(power, 0, 1);
+    const themeIndex = this.#puzzle?.theme ?? 0;
+    const ports = DIRECTIONS.filter((direction) => (projected.tile.baseMask & direction.bit) !== 0);
+    const oppositePair =
+      ports.length === 2 &&
+      ((ports[0]?.bit === 1 && ports[1]?.bit === 4) ||
+        (ports[0]?.bit === 4 && ports[1]?.bit === 1) ||
+        (ports[0]?.bit === 2 && ports[1]?.bit === 8) ||
+        (ports[0]?.bit === 8 && ports[1]?.bit === 2));
+    // The physical assembly now reflects the topology it controls: terminal,
+    // straight regulator, elbow escapement, or multi-way distributor.
+    const variant = ports.length <= 1 ? 0 : oppositePair ? 1 : ports.length === 2 ? 2 : 3;
+    const art = this.#art.mechanism(themeIndex, theme, this.#profile.quality, variant);
+    const targetOuter = projected.tileWidth * 0.148;
+    const scale = targetOuter / 112;
+    const spin = this.#reducedMotion ? 0 : time * 0.00018 * (0.34 + normalizedPower * 0.9) * (variant % 2 ? -1 : 1);
+
     context.save();
     context.translate(center.x, center.y);
-    const spin = this.#reducedMotion ? 0 : time * 0.00018 * (0.28 + normalizedPower * 0.88);
     context.rotate(spin);
-    context.fillStyle = '#2e1d12';
-    context.strokeStyle = theme.brassLight;
-    context.lineWidth = Math.max(1.2, radius * 0.13);
-    for (let index = 0; index < 8; index += 1) {
-      context.rotate(Math.PI / 4);
-      roundedRect(context, radius * 0.72, -radius * 0.18, radius * 0.54, radius * 0.36, radius * 0.09);
-      context.fillStyle = index % 2 ? theme.brass : theme.brassLight;
-      context.fill();
-    }
-    context.rotate(-spin - Math.PI * 2);
-    if (this.#profile.quality === 'high') {
-      const ring = context.createRadialGradient(-radius * 0.25, -radius * 0.35, 0, 0, 0, radius);
-      ring.addColorStop(0, theme.brassLight);
-      ring.addColorStop(0.48, theme.brass);
-      ring.addColorStop(0.72, '#3b2618');
-      ring.addColorStop(1, theme.brassLight);
-      context.fillStyle = ring;
-    } else {
-      context.fillStyle = theme.brass;
-    }
-    context.beginPath();
-    context.arc(0, 0, radius, 0, Math.PI * 2);
-    context.fill();
-    context.fillStyle = normalizedPower > 0.02 ? withAlpha(theme.aqua, 0.35 + normalizedPower * 0.65) : '#071e21';
-    if (normalizedPower > 0.02 && this.#profile.useExpensiveShadows) {
-      context.shadowColor = theme.aqua;
-      context.shadowBlur = radius * (0.4 + normalizedPower * 1.2);
-    }
-    context.beginPath();
-    context.arc(0, 0, radius * (0.38 + normalizedPower * 0.1), 0, Math.PI * 2);
-    context.fill();
-    context.strokeStyle = 'rgba(255,255,255,.28)';
-    context.lineWidth = Math.max(1, radius * 0.08);
-    context.stroke();
-    if (!this.#reducedMotion && normalizedPower > 0.25 && this.#profile.quality === 'high') {
-      context.shadowBlur = 0;
-      context.fillStyle = '#ffffff';
-      for (let index = 0; index < 3; index += 1) {
-        const angle = -time * 0.0011 + index * (Math.PI * 2 / 3);
-        context.globalAlpha = 0.45 + normalizedPower * 0.45;
-        context.beginPath();
-        context.arc(Math.cos(angle) * radius * 0.64, Math.sin(angle) * radius * 0.64, Math.max(1, radius * 0.055), 0, Math.PI * 2);
-        context.fill();
-      }
+    context.drawImage(
+      art.image,
+      -art.dimensions.anchorX * scale,
+      -art.dimensions.anchorY * scale,
+      art.dimensions.width * scale,
+      art.dimensions.height * scale,
+    );
+    const premiumMechanism = this.#profile.quality === 'high' ? this.#premiumSprite('mechanism') : null;
+    if (premiumMechanism) {
+      const spriteSize = projected.tileWidth * 0.47;
+      context.globalAlpha = 0.16 + normalizedPower * 0.16;
+      context.globalCompositeOperation = normalizedPower > 0.1 ? 'screen' : 'soft-light';
+      context.drawImage(premiumMechanism, -spriteSize / 2, -spriteSize / 2, spriteSize, spriteSize);
     }
     context.restore();
+
+    // Independent counter-rotating dial and jeweled aether core.
+    const radius = projected.tileWidth * 0.104;
+    context.save();
+    context.translate(center.x, center.y);
+    context.rotate(-spin * 1.7);
+    context.strokeStyle = withAlpha(theme.brassLight, 0.78);
+    context.lineWidth = Math.max(1.2, radius * 0.075);
+    context.setLineDash(this.#profile.quality === 'high' ? [radius * 0.20, radius * 0.11] : []);
+    context.beginPath();
+    context.arc(0, 0, radius * 0.72, 0, Math.PI * 2);
+    context.stroke();
+    context.setLineDash([]);
+    context.restore();
+
+    const pulse = this.#reducedMotion ? 1 : 0.92 + Math.sin(time * 0.0055 + variant) * 0.08;
+    const core = context.createRadialGradient(
+      center.x - radius * 0.25,
+      center.y - radius * 0.32,
+      0,
+      center.x,
+      center.y,
+      radius * 0.65,
+    );
+    core.addColorStop(0, normalizedPower > 0.02 ? '#ffffff' : '#8bb2a7');
+    core.addColorStop(0.16, normalizedPower > 0.02 ? theme.aqua : theme.glassLight);
+    core.addColorStop(0.48, normalizedPower > 0.02 ? withAlpha(theme.aquaSoft, 0.95) : theme.ink);
+    core.addColorStop(0.76, '#041315');
+    core.addColorStop(1, theme.brassLight);
+    context.save();
+    if (normalizedPower > 0.02 && this.#profile.useExpensiveShadows) {
+      context.shadowColor = theme.aqua;
+      context.shadowBlur = radius * (1.2 + normalizedPower * 2.2);
+    }
+    context.fillStyle = core;
+    context.beginPath();
+    context.arc(center.x, center.y, radius * (0.47 + normalizedPower * 0.08) * pulse, 0, Math.PI * 2);
+    context.fill();
+    context.strokeStyle = 'rgba(255,245,208,.72)';
+    context.lineWidth = Math.max(1, radius * 0.07);
+    context.stroke();
+    context.restore();
+
+    if (!this.#reducedMotion && normalizedPower > 0.18) {
+      const satelliteCount = this.#profile.quality === 'high' ? 4 : 2;
+      context.save();
+      context.fillStyle = '#fffdf0';
+      if (this.#profile.useExpensiveShadows) {
+        context.shadowColor = theme.aqua;
+        context.shadowBlur = radius * 0.8;
+      }
+      for (let index = 0; index < satelliteCount; index += 1) {
+        const angle = time * 0.0012 * (index % 2 ? -1 : 1) + index * Math.PI * 2 / satelliteCount;
+        const orbit = radius * (0.58 + (index % 2) * 0.16);
+        context.globalAlpha = 0.42 + normalizedPower * 0.55;
+        context.beginPath();
+        context.arc(center.x + Math.cos(angle) * orbit, center.y + Math.sin(angle) * orbit * 0.55, Math.max(1.1, radius * 0.045), 0, Math.PI * 2);
+        context.fill();
+      }
+      context.restore();
+    }
   }
 
   #drawSource(projected: ProjectedTile, center: Point, theme: Theme, time: number): void {
     const context = this.#context;
-    const radius = projected.tileWidth * 0.135;
-    const baseY = center.y - projected.tileHeight * 0.06;
+    const themeIndex = this.#puzzle?.theme ?? 0;
+    const art = this.#art.source(themeIndex, theme, this.#profile.quality);
+    const targetOuter = projected.tileWidth * 0.19;
+    const scale = targetOuter / 112;
+    const baseY = center.y + projected.tileHeight * 0.018;
+    const premiumSource = this.#profile.quality === 'high' ? this.#premiumSprite('source') : null;
+    let premiumSize = 0;
+
     context.save();
-    context.translate(center.x, baseY);
-    context.fillStyle = '#2d2116';
-    context.strokeStyle = theme.brassLight;
-    context.lineWidth = Math.max(1.5, radius * 0.12);
-    context.beginPath();
-    context.ellipse(0, radius * 0.28, radius * 1.05, radius * 0.55, 0, 0, Math.PI * 2);
-    context.fill();
-    context.stroke();
-    if (this.#profile.quality === 'high') {
-      const bowl = context.createRadialGradient(-radius * 0.35, -radius * 0.5, 0, 0, 0, radius * 1.2);
-      bowl.addColorStop(0, theme.brassLight);
-      bowl.addColorStop(0.42, theme.brass);
-      bowl.addColorStop(0.8, '#4a311a');
-      bowl.addColorStop(1, theme.brassLight);
-      context.fillStyle = bowl;
+    if (premiumSource) {
+      premiumSize = projected.tileWidth * 0.57;
+      if (this.#profile.useExpensiveShadows) {
+        context.shadowColor = 'rgba(0,0,0,.62)';
+        context.shadowBlur = projected.tileWidth * 0.06;
+        context.shadowOffsetY = projected.tileHeight * 0.06;
+      }
+      context.drawImage(
+        premiumSource,
+        center.x - premiumSize / 2,
+        baseY - premiumSize * 0.80,
+        premiumSize,
+        premiumSize,
+      );
     } else {
-      context.fillStyle = theme.brass;
+      context.drawImage(
+        art.image,
+        center.x - art.dimensions.anchorX * scale,
+        baseY - art.dimensions.anchorY * scale,
+        art.dimensions.width * scale,
+        art.dimensions.height * scale,
+      );
     }
-    context.beginPath();
-    context.arc(0, 0, radius, 0, Math.PI * 2);
-    context.fill();
-    context.fillStyle = theme.aqua;
+    context.restore();
+
+    const radius = projected.tileWidth * 0.112;
+    const orbY = baseY - (premiumSource ? premiumSize * 0.29 : projected.tileHeight * 0.20);
+    const pulse = this.#reducedMotion ? 1 : 0.9 + Math.sin(time * 0.0046) * 0.1;
+    const orb = context.createRadialGradient(
+      center.x - radius * 0.32,
+      orbY - radius * 0.38,
+      0,
+      center.x,
+      orbY,
+      radius * 0.92,
+    );
+    orb.addColorStop(0, '#ffffff');
+    orb.addColorStop(0.13, '#dffffc');
+    orb.addColorStop(0.28, theme.aqua);
+    orb.addColorStop(0.58, theme.aquaSoft);
+    orb.addColorStop(0.82, '#0b5570');
+    orb.addColorStop(1, '#04141a');
+    context.save();
     if (this.#profile.useExpensiveShadows) {
       context.shadowColor = theme.aqua;
-      context.shadowBlur = radius * 2.2;
+      context.shadowBlur = radius * 2.8;
     }
+    context.fillStyle = orb;
     context.beginPath();
-    context.arc(0, 0, radius * 0.5, 0, Math.PI * 2);
+    context.arc(center.x, orbY, radius * 0.64 * pulse, 0, Math.PI * 2);
+    context.fill();
+    context.strokeStyle = 'rgba(255,255,255,.76)';
+    context.lineWidth = Math.max(1.4, radius * 0.085);
+    context.stroke();
+    context.restore();
+
+    // Glass sphere highlight and refraction.
+    context.save();
+    context.globalAlpha = 0.76;
+    context.strokeStyle = 'rgba(226,255,250,.72)';
+    context.lineWidth = Math.max(1, radius * 0.055);
+    context.beginPath();
+    context.arc(center.x - radius * 0.13, orbY - radius * 0.08, radius * 0.48, Math.PI * 1.06, Math.PI * 1.68);
+    context.stroke();
+    context.fillStyle = 'rgba(255,255,255,.86)';
+    context.beginPath();
+    context.ellipse(center.x - radius * 0.22, orbY - radius * 0.30, radius * 0.12, radius * 0.06, -0.55, 0, Math.PI * 2);
     context.fill();
     context.restore();
 
-    const pulse = this.#reducedMotion ? 1 : 0.92 + Math.sin(time * 0.0045) * 0.08;
-    const starY = baseY - radius * 1.08;
+    // Counter-rotating orbital rings and cardinal runes.
+    const orbit = radius * 1.42;
     context.save();
-    context.strokeStyle = theme.aqua;
+    context.translate(center.x, orbY);
+    context.rotate(this.#reducedMotion ? -0.2 : time * 0.00036);
+    context.scale(1, 0.46);
+    context.strokeStyle = withAlpha(theme.aqua, 0.78);
+    context.lineWidth = Math.max(1.4, radius * 0.075);
     if (this.#profile.useExpensiveShadows) {
       context.shadowColor = theme.aqua;
-      context.shadowBlur = radius * 1.1;
+      context.shadowBlur = radius * 0.9;
     }
-    context.lineWidth = Math.max(1.6, radius * 0.09);
     context.beginPath();
-    context.arc(center.x, baseY, radius * 1.22, Math.PI * 1.08, Math.PI * 1.92);
+    context.arc(0, 0, orbit, 0, Math.PI * 2);
     context.stroke();
-    drawStar(context, center.x, starY, radius * 0.36 * pulse, radius * 0.11 * pulse, 4, time * 0.0005);
-    context.fillStyle = '#ffffff';
-    context.fill();
     context.restore();
+
+    context.save();
+    context.translate(center.x, orbY);
+    context.rotate(this.#reducedMotion ? 0.34 : -time * 0.00052);
+    context.strokeStyle = withAlpha(theme.brassLight, 0.68);
+    context.lineWidth = Math.max(1, radius * 0.055);
+    context.beginPath();
+    context.arc(0, 0, orbit * 0.82, Math.PI * 0.08, Math.PI * 0.92);
+    context.arc(0, 0, orbit * 0.82, Math.PI * 1.08, Math.PI * 1.92);
+    context.stroke();
+    for (let index = 0; index < 4; index += 1) {
+      const angle = index * Math.PI / 2;
+      context.fillStyle = index % 2 ? theme.accent : theme.aqua;
+      drawStar(context, Math.cos(angle) * orbit * 0.82, Math.sin(angle) * orbit * 0.42, radius * 0.14, radius * 0.05, 4, angle + time * 0.0002);
+      context.fill();
+    }
+    context.restore();
+
+    // Rising aether motes make the source feel alive without forcing the full
+    // renderer to stay at 60fps on idle mobile devices.
+    if (!this.#reducedMotion && this.#profile.quality === 'high') {
+      context.save();
+      context.fillStyle = '#ffffff';
+      if (this.#profile.useExpensiveShadows) {
+        context.shadowColor = theme.aqua;
+        context.shadowBlur = radius * 0.72;
+      }
+      for (let index = 0; index < 5; index += 1) {
+        const phase = (time * 0.00032 + index * 0.19) % 1;
+        const x = center.x + Math.sin(index * 2.3 + time * 0.001) * radius * (0.18 + phase * 0.36);
+        const y = orbY - radius * (0.2 + phase * 2.2);
+        context.globalAlpha = Math.sin(phase * Math.PI) * 0.78;
+        context.beginPath();
+        context.arc(x, y, Math.max(1.1, radius * (0.025 + (1 - phase) * 0.025)), 0, Math.PI * 2);
+        context.fill();
+      }
+      context.restore();
+    }
   }
 
   #drawPlant(projected: ProjectedTile, center: Point, theme: Theme, power: number, time: number): void {
     const context = this.#context;
-    const scale = projected.tileWidth / 150;
     const normalizedPower = clamp(power, 0, 1);
-    const bloom = 0.38 + normalizedPower * 0.62;
-    const potY = center.y + projected.tileHeight * 0.03;
-    const potW = 30 * scale;
-    const potH = 23 * scale;
-    context.save();
-    context.shadowColor = 'rgba(0,0,0,.42)';
-    context.shadowBlur = this.#profile.useExpensiveShadows ? 9 * scale : 3 * scale;
-    context.shadowOffsetY = 6 * scale;
-    if (this.#profile.quality === 'high') {
-      const pot = context.createLinearGradient(center.x - potW / 2, potY, center.x + potW / 2, potY + potH);
-      pot.addColorStop(0, '#f0c176');
-      pot.addColorStop(0.32, '#8e4f2c');
-      pot.addColorStop(0.72, '#bd7740');
-      pot.addColorStop(1, '#49271c');
-      context.fillStyle = pot;
-    } else {
-      context.fillStyle = '#a96237';
-    }
-    context.beginPath();
-    context.moveTo(center.x - potW * 0.46, potY);
-    context.lineTo(center.x + potW * 0.46, potY);
-    context.lineTo(center.x + potW * 0.31, potY + potH);
-    context.quadraticCurveTo(center.x, potY + potH * 1.17, center.x - potW * 0.31, potY + potH);
-    context.closePath();
-    context.fill();
-    context.shadowColor = 'transparent';
-    context.strokeStyle = theme.brassLight;
-    context.lineWidth = Math.max(1, scale * 1.3);
-    context.stroke();
-    context.beginPath();
-    context.ellipse(center.x, potY, potW * 0.48, potH * 0.17, 0, 0, Math.PI * 2);
-    context.fillStyle = '#4a271b';
-    context.fill();
-    context.stroke();
-    context.strokeStyle = 'rgba(255,226,153,.45)';
-    context.beginPath();
-    context.moveTo(center.x - potW * 0.25, potY + potH * 0.48);
-    context.lineTo(center.x + potW * 0.25, potY + potH * 0.48);
-    context.stroke();
-
-    const stemTop = potY - (26 + normalizedPower * 5) * scale;
-    context.strokeStyle = mixHex('#3e704c', '#61c276', normalizedPower);
-    context.lineWidth = Math.max(2, 3.2 * scale);
-    context.lineCap = 'round';
-    context.beginPath();
-    context.moveTo(center.x, potY);
-    context.quadraticCurveTo(center.x - 2 * scale, potY - 15 * scale, center.x, stemTop);
-    context.stroke();
-    this.#drawLeaf(center.x - 5 * scale, potY - 14 * scale, -0.55, 10 * scale, normalizedPower);
-    this.#drawLeaf(center.x + 5 * scale, potY - 19 * scale, Math.PI + 0.45, 10 * scale, normalizedPower);
-
     const kind = projected.tile.plantKind ?? 'lumen-orchid';
     const palette = PLANT_PALETTES[kind];
-    if (normalizedPower > 0.05 && this.#profile.useExpensiveShadows) {
-      context.shadowColor = palette[2];
-      context.shadowBlur = (7 + normalizedPower * 14) * scale;
+    const themeIndex = this.#puzzle?.theme ?? 0;
+    const art = this.#art.planter(themeIndex, theme, this.#profile.quality, kind);
+    const targetPotWidth = projected.tileWidth * 0.255;
+    const scale = targetPotWidth / 114;
+    const potBaseY = center.y + projected.tileHeight * 0.235;
+    const variant = (projected.tile.x * 5 + projected.tile.y * 9) % 4;
+    const sway = this.#reducedMotion ? 0 : Math.sin(time * 0.0017 + projected.tile.x * 0.81 + projected.tile.y * 0.43) * (0.015 + normalizedPower * 0.035);
+    const hasCloche = this.#profile.quality === 'high' && (variant === 0 || kind === 'mist-lily');
+
+    // Selected specimens use a hand-rendered transparent cloche sprite with
+    // separate dormant and illuminated states. Cross-fading the pair preserves
+    // the real gameplay bloom transition instead of swapping a static picture.
+    if (hasCloche) {
+      const [offKey, onKey] = PLANT_SPRITES[kind];
+      const offSprite = this.#premiumSprite(offKey);
+      const onSprite = this.#premiumSprite(onKey);
+      if (offSprite && onSprite) {
+        const spriteSize = projected.tileWidth * 0.68;
+        const spriteX = center.x - spriteSize / 2;
+        const spriteY = potBaseY - spriteSize * 0.84;
+        context.save();
+        context.translate(center.x, potBaseY);
+        context.rotate(sway * 0.18);
+        context.translate(-center.x, -potBaseY);
+        if (this.#profile.useExpensiveShadows) {
+          context.shadowColor = normalizedPower > 0.18 ? palette[2] : 'rgba(0,0,0,.58)';
+          context.shadowBlur = projected.tileWidth * (0.045 + normalizedPower * 0.06);
+          context.shadowOffsetY = projected.tileHeight * 0.025;
+        }
+        context.globalAlpha = 1;
+        context.drawImage(offSprite, spriteX, spriteY, spriteSize, spriteSize);
+        context.globalAlpha = normalizedPower * normalizedPower * (3 - 2 * normalizedPower);
+        context.globalCompositeOperation = normalizedPower > 0.42 ? 'screen' : 'source-over';
+        context.drawImage(onSprite, spriteX, spriteY, spriteSize, spriteSize);
+        context.restore();
+
+        if (!this.#reducedMotion && normalizedPower > 0.35) {
+          context.save();
+          context.fillStyle = '#fffbe7';
+          if (this.#profile.useExpensiveShadows) {
+            context.shadowColor = palette[2];
+            context.shadowBlur = projected.tileWidth * 0.04;
+          }
+          for (let index = 0; index < 6; index += 1) {
+            const phase = (time * 0.00028 + index / 6 + variant * 0.07) % 1;
+            const angle = index * 2.17 + time * 0.0006;
+            context.globalAlpha = Math.sin(phase * Math.PI) * normalizedPower * 0.85;
+            context.beginPath();
+            context.arc(
+              center.x + Math.cos(angle) * projected.tileWidth * (0.035 + phase * 0.08),
+              potBaseY - projected.tileHeight * (0.25 + phase * 0.52) + Math.sin(angle) * projected.tileHeight * 0.035,
+              Math.max(0.8, projected.tileWidth * 0.006),
+              0,
+              Math.PI * 2,
+            );
+            context.fill();
+          }
+          context.restore();
+        }
+        return;
+      }
     }
-    const sway = this.#reducedMotion ? 0 : Math.sin(time * 0.0018 + projected.tile.x * 0.8 + projected.tile.y * 0.37) * (0.025 + normalizedPower * 0.055);
-    const petals = kind === 'sun-dahlia' || kind === 'ember-bloom' ? 10 : kind === 'mist-lily' ? 6 : 7;
-    context.save();
-    context.translate(center.x, stemTop);
-    context.rotate(sway);
-    for (let index = 0; index < petals; index += 1) {
+
+    // Some rare specimens are protected by a glass cloche. It is rendered behind
+    // the plant so the crop stays crisp and readable at gameplay scale.
+    if (hasCloche) {
+      const domeRadius = projected.tileWidth * 0.13;
+      const domeTop = potBaseY - projected.tileHeight * 0.47;
       context.save();
-      context.rotate((Math.PI * 2 * index) / petals + normalizedPower * 0.05);
-      context.fillStyle = index % 2 === 0 ? palette[0] : palette[1];
-      context.globalAlpha = 0.48 + normalizedPower * 0.52;
+      const glass = context.createLinearGradient(center.x - domeRadius, domeTop, center.x + domeRadius, potBaseY);
+      glass.addColorStop(0, 'rgba(245,255,255,.22)');
+      glass.addColorStop(0.34, 'rgba(185,244,236,.04)');
+      glass.addColorStop(0.72, 'rgba(96,199,185,.06)');
+      glass.addColorStop(1, 'rgba(255,255,255,.15)');
+      context.fillStyle = glass;
+      context.strokeStyle = 'rgba(226,255,249,.42)';
+      context.lineWidth = Math.max(1.2, projected.tileWidth * 0.008);
+      if (normalizedPower > 0.35 && this.#profile.useExpensiveShadows) {
+        context.shadowColor = palette[2];
+        context.shadowBlur = domeRadius * 0.42 * normalizedPower;
+      }
       context.beginPath();
-      context.ellipse(0, -9 * scale * bloom, 4.2 * scale * bloom, 10 * scale * bloom, 0, 0, Math.PI * 2);
+      context.moveTo(center.x - domeRadius, potBaseY - 4);
+      context.bezierCurveTo(center.x - domeRadius * 0.96, domeTop + domeRadius * 0.15, center.x - domeRadius * 0.55, domeTop, center.x, domeTop);
+      context.bezierCurveTo(center.x + domeRadius * 0.55, domeTop, center.x + domeRadius * 0.96, domeTop + domeRadius * 0.15, center.x + domeRadius, potBaseY - 4);
+      context.closePath();
+      context.fill();
+      context.stroke();
+      context.strokeStyle = 'rgba(255,255,255,.48)';
+      context.lineWidth = Math.max(1, projected.tileWidth * 0.0045);
+      context.beginPath();
+      context.moveTo(center.x - domeRadius * 0.56, potBaseY - 12);
+      context.bezierCurveTo(center.x - domeRadius * 0.72, domeTop + domeRadius * 0.28, center.x - domeRadius * 0.35, domeTop + 7, center.x - domeRadius * 0.12, domeTop + 4);
+      context.stroke();
+      context.restore();
+    }
+
+    context.save();
+    context.translate(center.x, potBaseY);
+    context.rotate(sway * 0.22);
+    context.drawImage(
+      art.image,
+      -art.dimensions.anchorX * scale,
+      -art.dimensions.anchorY * scale,
+      art.dimensions.width * scale,
+      art.dimensions.height * scale,
+    );
+    context.restore();
+
+    const blossomCenterY = potBaseY - projected.tileHeight * (0.32 + normalizedPower * 0.035);
+    const bloom = 0.54 + normalizedPower * 0.46;
+    const blossomCount = kind === 'sun-dahlia' || kind === 'ember-bloom' ? 5 : kind === 'mist-lily' ? 4 : 6;
+    const layout: readonly [number, number, number][] = [
+      [0, -0.12, 1.10], [-0.64, 0.18, 0.78], [0.62, 0.12, 0.82], [-0.34, -0.42, 0.68], [0.36, -0.46, 0.72], [0.02, 0.42, 0.64],
+    ];
+    for (let index = 0; index < blossomCount; index += 1) {
+      const [ox, oy, size] = layout[index] as [number, number, number];
+      const localSway = this.#reducedMotion ? 0 : Math.sin(time * 0.002 + index * 1.7 + variant) * (0.9 + normalizedPower * 1.4);
+      const x = center.x + ox * projected.tileWidth * 0.115 + localSway;
+      const y = blossomCenterY + oy * projected.tileHeight * 0.26;
+      this.#drawDetailedBloom(x, y, projected.tileWidth * 0.064 * size, kind, bloom, time + index * 173, normalizedPower);
+    }
+
+    // Living pollen points create depth around the bloom rather than a flat glow.
+    if (!this.#reducedMotion && normalizedPower > 0.42) {
+      const moteCount = this.#profile.quality === 'high' ? 7 : 3;
+      context.save();
+      context.fillStyle = '#fffbe0';
+      if (this.#profile.useExpensiveShadows) {
+        context.shadowColor = palette[2];
+        context.shadowBlur = projected.tileWidth * 0.035;
+      }
+      for (let index = 0; index < moteCount; index += 1) {
+        const phase = (time * 0.00024 + index / moteCount + variant * 0.09) % 1;
+        const angle = index * 2.31 + time * 0.0007;
+        const x = center.x + Math.cos(angle) * projected.tileWidth * (0.05 + phase * 0.08);
+        const y = blossomCenterY - projected.tileHeight * phase * 0.34 + Math.sin(angle) * projected.tileHeight * 0.04;
+        context.globalAlpha = Math.sin(phase * Math.PI) * normalizedPower * 0.85;
+        context.beginPath();
+        context.arc(x, y, Math.max(0.9, projected.tileWidth * 0.007 * (1 - phase * 0.4)), 0, Math.PI * 2);
+        context.fill();
+      }
+      context.restore();
+    }
+  }
+
+  #drawDetailedBloom(x: number, y: number, radius: number, kind: PlantKind, bloom: number, time: number, power: number): void {
+    const context = this.#context;
+    const palette = PLANT_PALETTES[kind];
+    const petals = kind === 'sun-dahlia' || kind === 'ember-bloom' ? 12 : kind === 'mist-lily' ? 6 : 8;
+    const rotation = this.#reducedMotion ? 0 : Math.sin(time * 0.0009) * 0.08;
+    context.save();
+    context.translate(x, y);
+    context.rotate(rotation);
+    if (power > 0.05 && this.#profile.useExpensiveShadows) {
+      context.shadowColor = palette[2];
+      context.shadowBlur = radius * (0.8 + power * 1.7);
+    }
+
+    // Back petal ring.
+    for (let index = 0; index < petals; index += 1) {
+      const angle = index * Math.PI * 2 / petals;
+      context.save();
+      context.rotate(angle);
+      const gradient = context.createLinearGradient(0, -radius * 1.45, 0, radius * 0.25);
+      const petalColor = palette[index % 2 === 0 ? 0 : 1];
+      gradient.addColorStop(0, petalColor);
+      gradient.addColorStop(0.54, mixHex(petalColor, '#ffffff', 0.18 + power * 0.18));
+      gradient.addColorStop(1, mixHex(petalColor, '#27152d', 0.42));
+      context.fillStyle = gradient;
+      context.globalAlpha = 0.70 + power * 0.30;
+      context.beginPath();
+      context.moveTo(0, 0);
+      context.bezierCurveTo(-radius * 0.55 * bloom, -radius * 0.28, -radius * 0.48 * bloom, -radius * 1.18 * bloom, 0, -radius * 1.46 * bloom);
+      context.bezierCurveTo(radius * 0.48 * bloom, -radius * 1.18 * bloom, radius * 0.55 * bloom, -radius * 0.28, 0, 0);
+      context.fill();
+      context.strokeStyle = 'rgba(255,255,255,.18)';
+      context.lineWidth = Math.max(0.6, radius * 0.055);
+      context.stroke();
+      context.restore();
+    }
+
+    // Inner curled petals add the density missing from simple vector flowers.
+    const innerCount = Math.max(4, Math.floor(petals * 0.58));
+    for (let index = 0; index < innerCount; index += 1) {
+      const angle = index * Math.PI * 2 / innerCount + 0.35;
+      context.save();
+      context.rotate(angle);
+      context.fillStyle = index % 2 ? palette[1] : palette[0];
+      context.globalAlpha = 0.72 + power * 0.28;
+      context.beginPath();
+      context.ellipse(0, -radius * 0.58 * bloom, radius * 0.22 * bloom, radius * 0.58 * bloom, 0, 0, Math.PI * 2);
       context.fill();
       context.restore();
     }
-    context.globalAlpha = 0.5 + normalizedPower * 0.5;
-    context.fillStyle = palette[2];
+
+    const core = context.createRadialGradient(-radius * 0.12, -radius * 0.16, 0, 0, 0, radius * 0.5);
+    core.addColorStop(0, '#ffffff');
+    core.addColorStop(0.22, palette[2]);
+    core.addColorStop(0.62, mixHex(palette[2], '#f5c857', 0.38));
+    core.addColorStop(1, '#6d3b1a');
+    context.globalAlpha = 0.58 + power * 0.42;
+    context.fillStyle = core;
     context.beginPath();
-    context.arc(0, 0, 4.8 * scale * bloom, 0, Math.PI * 2);
+    context.arc(0, 0, radius * (0.34 + power * 0.08), 0, Math.PI * 2);
     context.fill();
-    if (!this.#reducedMotion && normalizedPower > 0.65 && this.#profile.quality === 'high') {
-      context.globalAlpha = (normalizedPower - 0.65) / 0.35;
-      context.fillStyle = '#ffffff';
-      for (let index = 0; index < 3; index += 1) {
-        const angle = time * 0.001 + index * Math.PI * 2 / 3;
-        context.beginPath();
-        context.arc(Math.cos(angle) * 15 * scale, Math.sin(angle) * 9 * scale - 3 * scale, 1.2 * scale, 0, Math.PI * 2);
-        context.fill();
-      }
-    }
-    context.restore();
     context.restore();
   }
 
@@ -1183,6 +1593,19 @@ export class ConservatoryRenderer {
 
   #drawLock(x: number, y: number, radius: number, theme: Theme): void {
     const context = this.#context;
+    const sprite = this.#premiumSprite('lock');
+    if (sprite) {
+      const size = radius * 3.7;
+      context.save();
+      if (this.#profile.useExpensiveShadows) {
+        context.shadowColor = 'rgba(0,0,0,.58)';
+        context.shadowBlur = radius * .8;
+        context.shadowOffsetY = radius * .32;
+      }
+      context.drawImage(sprite, x - size / 2, y - size / 2, size, size);
+      context.restore();
+      return;
+    }
     context.save();
     context.fillStyle = '#0a2828';
     context.strokeStyle = theme.brassLight;
@@ -1253,6 +1676,36 @@ export class ConservatoryRenderer {
     const x = center.x + vector.x * 0.48;
     const y = center.y + vector.y * 0.48;
     const scale = projected.tileWidth / 150;
+    const sprite = this.#premiumSprite('leak');
+    if (sprite) {
+      const size = projected.tileWidth * .43;
+      const pulse = this.#reducedMotion ? 1 : .97 + Math.sin(time * .009 + projected.tile.x) * .035;
+      context.save();
+      context.translate(x, y);
+      context.scale(pulse, 1);
+      if (this.#profile.useExpensiveShadows) {
+        context.shadowColor = theme.aqua;
+        context.shadowBlur = projected.tileWidth * .09;
+      }
+      context.drawImage(sprite, -size / 2, -size * .70, size, size);
+      context.shadowBlur = 0;
+      const badgeX = size * .29;
+      const badgeY = -size * .44;
+      context.fillStyle = '#d64f4f';
+      context.strokeStyle = '#fff1d2';
+      context.lineWidth = Math.max(1.4, scale * 1.8);
+      context.beginPath();
+      context.arc(badgeX, badgeY, Math.max(7, size * .075), 0, Math.PI * 2);
+      context.fill();
+      context.stroke();
+      context.fillStyle = '#fff';
+      context.font = `900 ${Math.max(10, size * .1)}px system-ui`;
+      context.textAlign = 'center';
+      context.textBaseline = 'middle';
+      context.fillText('!', badgeX, badgeY + 1);
+      context.restore();
+      return;
+    }
     context.save();
     context.strokeStyle = theme.aqua;
     if (this.#profile.useExpensiveShadows) {

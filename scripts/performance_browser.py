@@ -149,14 +149,20 @@ def sample_game(page: Page, *, warmup_ms: int = 1_200, sample_ms: int = 1_500) -
     renderer_after = after["renderer"]
     frame_delta = max(0, renderer_after["renderedFrames"] - renderer_before["renderedFrames"])
     browser_metrics = page.evaluate(
-        """() => ({
-          domNodes: document.getElementsByTagName('*').length,
-          heapUsed: performance.memory?.usedJSHeapSize ?? null,
-          viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },
-          canvas: { width: document.querySelector('canvas')?.width ?? 0, height: document.querySelector('canvas')?.height ?? 0 },
-          qualityMode: document.querySelector('#app')?.getAttribute('data-quality-mode'),
-          overflowX: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - document.documentElement.clientWidth,
-        })"""
+        """() => {
+          const resources = performance.getEntriesByType('resource');
+          return {
+            domNodes: document.getElementsByTagName('*').length,
+            heapUsed: performance.memory?.usedJSHeapSize ?? null,
+            viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },
+            canvas: { width: document.querySelector('canvas')?.width ?? 0, height: document.querySelector('canvas')?.height ?? 0 },
+            qualityMode: document.querySelector('#app')?.getAttribute('data-quality-mode'),
+            overflowX: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - document.documentElement.clientWidth,
+            resourceCount: resources.length,
+            resourceTransferBytes: resources.reduce((total, resource) => total + (resource.transferSize || 0), 0),
+            resourceEncodedBytes: resources.reduce((total, resource) => total + (resource.encodedBodySize || 0), 0),
+          };
+        }"""
     )
     return {
         "diagnostics": after,
@@ -212,6 +218,8 @@ def run_device(
             raise AssertionError(f"{label}: input-to-render latency is too high: {interaction_latency} ms")
         if result["overflowX"] > 2:
             raise AssertionError(f"{label}: horizontal overflow {result['overflowX']} px")
+        if result["resourceEncodedBytes"] > 1_800_000:
+            raise AssertionError(f"{label}: cumulative first-game payload is too large: {result['resourceEncodedBytes']} bytes")
         if errors:
             raise AssertionError("\n".join(errors))
         return {
@@ -245,6 +253,18 @@ def run_menu_sleep(browser: Browser) -> dict[str, Any]:
         rendered = max(0, after["renderedFrames"] - before["renderedFrames"])
         if rendered > 1:
             raise AssertionError(f"menu-sleep: static menu rendered {rendered} canvas frames")
+        network = page.evaluate(
+            """() => {
+              const resources = performance.getEntriesByType('resource');
+              return {
+                resourceCount: resources.length,
+                resourceTransferBytes: resources.reduce((total, resource) => total + (resource.transferSize || 0), 0),
+                resourceEncodedBytes: resources.reduce((total, resource) => total + (resource.encodedBodySize || 0), 0),
+              };
+            }"""
+        )
+        if network["resourceEncodedBytes"] > 900_000:
+            raise AssertionError(f"menu-sleep: first-screen payload is too large: {network['resourceEncodedBytes']} bytes")
         if errors:
             raise AssertionError("\n".join(errors))
         return {
@@ -253,6 +273,7 @@ def run_menu_sleep(browser: Browser) -> dict[str, Any]:
             "renderedFrames": rendered,
             "skippedFrameDelta": max(0, after["skippedFrames"] - before["skippedFrames"]),
             "diagnostics": after,
+            **network,
         }
     finally:
         context.close()

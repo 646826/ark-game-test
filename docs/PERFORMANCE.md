@@ -57,9 +57,10 @@ The renderer does not run a permanent 60 FPS loop.
 6. input-to-render latency;
 7. DOM and horizontal-overflow bounds;
 8. a 72-cycle low-end mobile stress run with repeated rotations, undo, view movement, pause/resume, and orientation changes;
-9. renderer queue bounds and measured heap growth.
+9. renderer queue bounds and measured heap growth;
+10. first-menu and cumulative first-game network payload budgets, so hidden HD art cannot silently regress startup.
 
-The current report is written to `artifacts/performance-report.json`. The measurements are local Chromium guardrails and must be complemented by physical-device profiling.
+The current report is written to `artifacts/performance-report.json`. In the latest local Chromium run, the mobile menu used about 738 KiB encoded, the Balanced first-game path used about 881 KiB, and the High first-game path used about 1.06 MiB. Hidden map, gameplay, and victory images are promoted from `data-src` only when their screen becomes active. These measurements are local guardrails and must be complemented by physical-device profiling.
 
 ## Physical-device release targets
 

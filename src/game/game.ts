@@ -462,6 +462,8 @@ export class ClockworkGame {
     this.#renderer.setSelected(this.#selectedId);
     this.#renderer.setCoach(puzzle.tutorial?.targetId ?? null);
     this.#pauseReasons.clear();
+    activateDeferredImages(this.#gameHud);
+    activateDeferredImages(this.#toolbar);
     this.#showScreen('playing');
     this.#toolbar.hidden = false;
     this.#gameHud.hidden = false;
@@ -847,6 +849,7 @@ export class ClockworkGame {
     this.#puzzle = null;
     this.#analysis = null;
     this.#renderMap();
+    activateDeferredImages(this.#mapScreen);
     this.#showScreen('map');
     this.#gameHud.hidden = true;
     this.#toolbar.hidden = true;
@@ -899,6 +902,8 @@ export class ClockworkGame {
       node.dataset.state = state;
       const status = node.querySelector<HTMLElement>('[data-chamber-status]');
       if (status) status.textContent = this.#i18n.t(state as 'complete' | 'current' | 'locked');
+      const dome = node.querySelector<HTMLImageElement>('[data-dome-image]');
+      if (dome) dome.src = `./assets/hd/dome-${state}.webp`;
       if (node instanceof HTMLButtonElement) {
         node.disabled = state === 'locked';
         node.dataset.action = state === 'current' ? 'current-chamber' : '';
@@ -920,6 +925,14 @@ export class ClockworkGame {
       card.dataset.unlocked = String(unlocked);
       const label = card.querySelector<HTMLElement>('[data-specimen-label]');
       if (label) label.textContent = unlocked ? specimenName(kind) : 'Locked specimen';
+      const image = card.querySelector<HTMLImageElement>('[data-specimen-image]');
+      if (image) {
+        image.hidden = !unlocked;
+        if (unlocked && !image.src) {
+          const source = image.dataset.src;
+          if (source) image.src = source;
+        }
+      }
     });
   }
 
@@ -933,23 +946,64 @@ export class ClockworkGame {
     setText(this.#gameHud, '[data-hud-blooms]', `${analysis.poweredPlants} / ${analysis.totalPlants}`);
     const sealed = Math.max(0, this.#initialLeaks - analysis.leaks.length);
     setText(this.#gameHud, '[data-hud-leaks]', `${sealed} / ${this.#initialLeaks}`);
-    const flow = this.#gameHud.querySelector<HTMLElement>('[data-flow-meter]');
-    if (flow) {
-      const percent = Math.round(analysis.progress * 100);
-      flow.style.setProperty('--flow', `${percent}%`);
-      flow.setAttribute('aria-valuenow', String(percent));
+    const flowPercent = Math.round(analysis.progress * 100);
+    setText(this.#gameHud, '[data-hud-energy]', this.#i18n.number(flowPercent));
+    setText(this.#gameHud, '[data-hud-brass]', this.#i18n.number(this.#progress.totalScore));
+    setText(this.#gameHud, '[data-hud-crystals]', this.#i18n.number(this.#progress.totalStars));
+    setText(this.#gameHud, '[data-side-bloom-status]', `${analysis.poweredPlants} / ${analysis.totalPlants}`);
+    setText(this.#gameHud, '[data-side-leak-status]', analysis.leaks.length === 0 ? 'All sealed' : `${analysis.leaks.length} remaining`);
+    setText(this.#gameHud, '[data-side-moves]', this.#i18n.number(this.#moves));
+    setText(this.#gameHud, '[data-side-move-target]', this.#i18n.number(Math.max(1, puzzle.idealMoves + 2)));
+    setText(this.#gameHud, '[data-side-flow]', `${flowPercent}%`);
+    const bloomCheck = this.#gameHud.querySelector<HTMLElement>('[data-side-bloom-check]');
+    if (bloomCheck) {
+      const complete = analysis.poweredPlants === analysis.totalPlants;
+      bloomCheck.textContent = complete ? '✓' : '○';
+      bloomCheck.dataset.complete = String(complete);
+    }
+    const leakCheck = this.#gameHud.querySelector<HTMLElement>('[data-side-leak-check]');
+    if (leakCheck) {
+      const complete = analysis.leaks.length === 0;
+      leakCheck.textContent = complete ? '✓' : '○';
+      leakCheck.dataset.complete = String(complete);
+    }
+    const moveCheck = this.#gameHud.querySelector<HTMLElement>('[data-side-move-check]');
+    if (moveCheck) {
+      const complete = this.#moves <= puzzle.idealMoves + 2;
+      moveCheck.textContent = complete ? '✓' : '!';
+      moveCheck.dataset.complete = String(complete);
+    }
+    const restoration = this.#restorationPercent();
+    setText(this.#gameHud, '[data-restoration-percent]', `${restoration}%`);
+    setText(this.#gameHud, '[data-collection-count]', `${this.#progress.specimens.length} / 5`);
+    setText(this.#gameHud, '[data-rooms-restored]', `${Math.min(8, Math.floor(Math.max(0, this.#progress.campaignLevel - 1) / 8))} / 8`);
+    const stageNames = ['Orchid Wing', 'Moon Fern Hall', 'Mist Gallery', 'Aurora Dome', 'Celestial Orangery'];
+    setText(this.#gameHud, '[data-restoration-stage]', stageNames[Math.min(stageNames.length - 1, Math.floor(restoration / 20))] as string);
+    for (const restorationRing of this.#gameHud.querySelectorAll<HTMLElement>('.restoration-ring')) {
+      restorationRing.style.setProperty('--restoration', `${restoration}%`);
+    }
+    const dailyTarget = 8;
+    const dailyCount = Math.min(dailyTarget, analysis.poweredPlants);
+    setText(this.#gameHud, '[data-daily-count]', `${dailyCount} / ${dailyTarget}`);
+    for (const dailyProgress of this.#gameHud.querySelectorAll<HTMLElement>('[data-daily-progress]')) {
+      dailyProgress.style.setProperty('--daily', `${Math.round((dailyCount / dailyTarget) * 100)}%`);
+    }
+    for (const flow of this.#gameHud.querySelectorAll<HTMLElement>('[data-flow-meter]')) {
+      flow.style.setProperty('--flow', `${flowPercent}%`);
+      flow.setAttribute('aria-valuenow', String(flowPercent));
       flow.dataset.complete = String(analysis.solved);
     }
-    this.#app.dataset.flow = String(Math.round(analysis.progress * 100));
+    this.#app.dataset.flow = String(flowPercent);
     this.#app.style.setProperty('--flow-level', analysis.progress.toFixed(3));
-    const hintButton = this.#toolbar.querySelector<HTMLButtonElement>('[data-action="hint"]');
-    if (hintButton) {
+    const hintLabel = this.#hintsUsed < FREE_HINTS ? String(FREE_HINTS - this.#hintsUsed) : 'Ad';
+    setText(this.#gameHud, '[data-hint-count]', hintLabel);
+    setText(this.#gameHud, '[data-undo-count]', this.#i18n.number(this.#history.length));
+    for (const hintButton of this.#gameHud.querySelectorAll<HTMLButtonElement>('[data-action="hint"]')) {
       hintButton.disabled = this.#hintBusy;
-      const badge = hintButton.querySelector<HTMLElement>('[data-hint-count]');
-      if (badge) badge.textContent = this.#hintsUsed < FREE_HINTS ? String(FREE_HINTS - this.#hintsUsed) : 'Ad';
     }
-    const undoButton = this.#toolbar.querySelector<HTMLButtonElement>('[data-action="undo"]');
-    if (undoButton) undoButton.disabled = this.#history.length === 0;
+    for (const undoButton of this.#gameHud.querySelectorAll<HTMLButtonElement>('[data-action="undo"]')) {
+      undoButton.disabled = this.#history.length === 0;
+    }
   }
 
   #renderObjective(): void {
@@ -977,6 +1031,7 @@ export class ClockworkGame {
   }
 
   #renderCompletion(stats: CompletionStats, unlocked: PlantKind | null, dailyRecord: boolean, leaderboard: boolean): void {
+    activateDeferredImages(this.#completeScreen);
     setText(this.#completeScreen, '[data-final-score]', this.#i18n.number(stats.score));
     const stars = this.#completeScreen.querySelector<HTMLElement>('[data-final-stars]');
     if (stars) {
@@ -1275,9 +1330,19 @@ export class ClockworkGame {
   }
 }
 
+function activateDeferredImages(scope: ParentNode): void {
+  const images = scope.querySelectorAll<HTMLImageElement>('img[data-src]');
+  images.forEach((image) => {
+    if (image.src) return;
+    const source = image.dataset.src;
+    if (!source) return;
+    image.src = source;
+  });
+}
+
 function shellTemplate(version: string): string {
   const specimenCards = (compact = false): string => (['lumen-orchid', 'moonbell', 'sun-dahlia', 'mist-lily', 'ember-bloom'] as const)
-    .map((kind, index) => `<article class="specimen-card${compact ? ' compact' : ''}" data-specimen="${kind}"><img src="${specimenImage(kind)}" alt=""><span data-specimen-label>${specimenName(kind)}</span><small>${'★'.repeat(Math.min(3, index + 1))}</small></article>`).join('');
+    .map((kind, index) => `<article class="specimen-card${compact ? ' compact' : ''}" data-specimen="${kind}"><img data-specimen-image data-src="${specimenImage(kind)}" alt="" decoding="async"><span data-specimen-label>${specimenName(kind)}</span><small>${'★'.repeat(Math.min(3, index + 1))}</small></article>`).join('');
   return `
     <div class="scene-background" aria-hidden="true"></div>
     <canvas id="game-canvas" aria-label="Clockwork Conservatory puzzle board"></canvas>
@@ -1288,12 +1353,12 @@ function shellTemplate(version: string): string {
         <nav class="utility-actions"><button class="round-button" data-action="help" aria-label="How to play">?</button><button class="round-button" data-action="settings" aria-label="Settings">⚙</button></nav>
       </header>
       <div class="menu-card ornate-panel">
-        <div class="brand-lockup"><span class="brand-emblem">✤</span><p class="eyebrow">Bloom Circuit</p><h1>Clockwork<br>Conservatory</h1><p class="tagline" data-i18n="tagline">Reconnect the aetherlight. Awaken every bloom.</p></div>
-        <button class="mode-card continue-card" data-action="continue-run" hidden><span class="mode-icon">↻</span><strong data-i18n="continue">Continue</strong><small data-continue-detail></small></button>
+        <div class="brand-lockup"><span class="brand-emblem"><img src="./assets/hd/botanical-crest.webp" alt=""></span><p class="eyebrow">Bloom Circuit</p><h1>Clockwork<br>Conservatory</h1><p class="tagline" data-i18n="tagline">Reconnect the aetherlight. Awaken every bloom.</p></div>
+        <button class="mode-card continue-card" data-action="continue-run" hidden><span class="mode-icon art"><img src="./assets/hd/mechanism.webp" alt=""></span><strong data-i18n="continue">Continue</strong><small data-continue-detail></small></button>
         <div class="mode-grid">
-          <button class="mode-card featured" data-action="campaign"><span class="mode-icon">✤</span><strong data-i18n="campaign">Campaign</strong><small data-i18n="campaignSub">Restore chambers and unlock rare blooms.</small></button>
-          <button class="mode-card" data-action="daily"><span class="mode-icon luminous">✦</span><strong data-i18n="daily">Daily Bloom</strong><small data-i18n="dailySub">One daily seed shared by every player.</small></button>
-          <button class="mode-card" data-action="zen"><span class="mode-icon">❉</span><strong data-i18n="zen">Zen Garden</strong><small data-i18n="zenSub">Relax in an untimed endless garden.</small></button>
+          <button class="mode-card featured" data-action="campaign"><span class="mode-icon art"><img src="./assets/hd/source.webp" alt=""></span><strong data-i18n="campaign">Campaign</strong><small data-i18n="campaignSub">Restore chambers and unlock rare blooms.</small></button>
+          <button class="mode-card" data-action="daily"><span class="mode-icon art luminous"><img src="./assets/hd/plant-lumen-orchid-on.webp" alt=""></span><strong data-i18n="daily">Daily Bloom</strong><small data-i18n="dailySub">One daily seed shared by every player.</small></button>
+          <button class="mode-card" data-action="zen"><span class="mode-icon art"><img src="./assets/hd/plant-moonbell-on.webp" alt=""></span><strong data-i18n="zen">Zen Garden</strong><small data-i18n="zenSub">Relax in an untimed endless garden.</small></button>
         </div>
         <div class="menu-meta">
           <section class="restoration-card"><div class="section-heading"><span data-i18n="restoration">Restoration progress</span><b data-progress-percent>0%</b></div><div class="progress-track"><i data-progress-bar></i></div><p>Restore chambers to reveal new botanical wonders.</p></section>
@@ -1305,25 +1370,56 @@ function shellTemplate(version: string): string {
     </section>
 
     <section id="map-screen" class="screen map-screen" hidden>
-      <header class="map-header"><button class="icon-text-button" data-action="return-menu">← <span data-i18n="menu">Menu</span></button><div class="map-brand"><span>✤</span><strong>Clockwork Conservatory</strong><small>Bloom Circuit</small></div><button class="round-button" data-action="settings" aria-label="Settings">⚙</button></header>
+      <header class="map-header"><button class="icon-text-button" data-action="return-menu">← <span data-i18n="menu">Menu</span></button><div class="map-brand"><span><img data-src="./assets/hd/botanical-crest.webp" alt="" decoding="async"></span><strong>Clockwork Conservatory</strong><small>Bloom Circuit</small></div><button class="round-button" data-action="settings" aria-label="Settings">⚙</button></header>
       <div class="map-layout">
         <main class="restoration-map ornate-panel">
           <header><p class="eyebrow">Bloom Circuit</p><h2 data-i18n="mapTitle">Restoration Map</h2><p data-i18n="mapBody">Reconnect every chamber and return the living glasshouse to splendour.</p></header>
           <div class="chamber-map">
             <svg class="map-paths" viewBox="0 0 900 430" aria-hidden="true"><path d="M150 110 C260 80 320 190 430 205 S600 85 720 120"/><path d="M150 320 C270 320 300 230 430 205 S600 310 730 320"/></svg>
-            ${CHAMBERS.map((chamber, index) => `<button class="chamber-node node-${index + 1}" data-chamber-index="${index}" data-state="locked"><span class="dome-icon">⌂</span><strong>${chamber.name}</strong><small data-chamber-status>Locked</small><b>${index < 2 ? '★★★' : index === 2 ? '★☆☆' : '☆☆☆'}</b></button>`).join('')}
+            ${CHAMBERS.map((chamber, index) => `<button class="chamber-node node-${index + 1}" data-chamber-index="${index}" data-state="locked"><span class="dome-icon"><img data-dome-image alt="" decoding="async"></span><strong>${chamber.name}</strong><small data-chamber-status>Locked</small><b>${index < 2 ? '★★★' : index === 2 ? '★☆☆' : '☆☆☆'}</b></button>`).join('')}
           </div>
           <div class="map-lower"><section class="map-progress"><div class="progress-orb"><strong data-map-progress>0%</strong><span>restored</span></div><div><h3 data-i18n="restoration">Restoration progress</h3><div class="progress-track"><i data-map-progress-bar></i></div><p>Keep restoring to unlock new blooms and areas.</p></div></section><section class="map-collection"><h3 data-i18n="specimens">Specimen collection</h3><div class="specimen-row">${specimenCards(true)}</div></section></div>
         </main>
-        <aside class="map-sidebar"><section class="daily-panel ornate-panel"><p class="eyebrow" data-i18n="daily">Daily Bloom</p><img src="./assets/specimen-1.webp" alt="Blue luminous flower"><strong data-i18n="dailyReady">New puzzle available</strong><button class="button primary" data-action="daily-map" data-i18n="playNow">Play now</button></section><section class="streak-panel ornate-panel"><p class="eyebrow" data-i18n="streak">Current streak</p><strong data-map-streak>0</strong><span data-i18n="dayStreak">days in a row</span><div class="streak-dots">✓ ✓ ✓ ✓ ✓ ✓ ✓</div></section></aside>
+        <aside class="map-sidebar"><section class="daily-panel ornate-panel"><p class="eyebrow" data-i18n="daily">Daily Bloom</p><img data-src="./assets/hd/plant-lumen-orchid-on.webp" alt="Blue luminous flower" decoding="async"><strong data-i18n="dailyReady">New puzzle available</strong><button class="button primary" data-action="daily-map" data-i18n="playNow">Play now</button></section><section class="streak-panel ornate-panel"><p class="eyebrow" data-i18n="streak">Current streak</p><strong data-map-streak>0</strong><span data-i18n="dayStreak">days in a row</span><div class="streak-dots">✓ ✓ ✓ ✓ ✓ ✓ ✓</div></section></aside>
       </div>
       <button class="continue-restoration button primary" data-action="continue-restoration" data-i18n="continueRestoration">Continue restoration</button>
     </section>
 
     <header id="game-hud" class="game-hud" hidden>
-      <div class="hud-brand"><span class="brand-glyph">✤</span><div><strong>Clockwork Conservatory</strong><small>Bloom Circuit</small></div></div>
-      <div class="hud-stats"><div data-stat="level"><span data-i18n="level">Level</span><strong data-hud-level>1</strong></div><div data-stat="score"><span data-i18n="score">Score</span><strong data-hud-score>0</strong></div><div class="moves-stat" data-stat="moves"><span data-i18n="moves">Moves</span><strong data-hud-moves>0</strong></div><div data-stat="blooms"><span data-i18n="blooms">Blooms</span><strong data-hud-blooms>0 / 0</strong></div><div data-stat="leaks"><span data-i18n="leaks">Leaks sealed</span><strong data-hud-leaks>0 / 0</strong></div><div class="flow-meter" data-flow-meter role="progressbar" aria-label="Bloom current" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i></i></div></div>
-      <button class="round-button hud-settings" data-action="pause" aria-label="Pause">Ⅱ</button>
+      <div class="game-topbar ornate-panel">
+        <div class="hud-brand"><span class="brand-crest"><img data-src="./assets/hd/botanical-crest.webp" alt="" decoding="async"><b>✤</b></span><div><strong>Clockwork<br>Conservatory</strong><small>Bloom Circuit</small></div></div>
+        <div class="resource-rack" aria-label="Conservatory resources">
+          <div class="resource-pill aether"><span>ϟ</span><strong data-hud-energy>0</strong><small>/ 100</small></div>
+          <div class="resource-pill brass"><span>⚙</span><strong data-hud-brass>0</strong></div>
+          <div class="resource-pill crystal"><span>◆</span><strong data-hud-crystals>0</strong></div>
+        </div>
+        <div class="hud-utilities"><button class="round-button" data-action="help" aria-label="How to play">?</button><button class="round-button hud-settings" data-action="pause" aria-label="Pause">Ⅱ</button></div>
+      </div>
+
+      <aside class="game-side-panel game-side-left ornate-panel">
+        <div class="side-level"><span data-i18n="level">Level</span><strong data-hud-level>1</strong><small>Bloom the Conservatory</small></div>
+        <section class="side-objectives">
+          <h3>Objectives</h3>
+          <div class="objective-row"><span class="objective-icon plant-icon">✤</span><div><strong>Power all plants</strong><small data-side-bloom-status>0 / 0</small></div><b data-side-bloom-check>○</b></div>
+          <div class="objective-row"><span class="objective-icon leak-icon">◉</span><div><strong>No active leaks</strong><small data-side-leak-status>0 remaining</small></div><b data-side-leak-check>○</b></div>
+          <div class="objective-row"><span class="objective-icon move-icon">⚙</span><div><strong>Efficient turns</strong><small><span data-side-moves>0</span> / <span data-side-move-target>0</span></small></div><b data-side-move-check>○</b></div>
+        </section>
+        <div class="side-stars" aria-label="Potential stars"><span>★</span><span>★</span><span>★</span><strong>Masterwork</strong></div>
+        <section class="side-flow"><div><span>Energy flow</span><strong data-side-flow>0%</strong></div><div class="flow-meter" data-flow-meter role="progressbar" aria-label="Bloom current" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i></i><em></em></div></section>
+        <section class="side-actions" aria-label="Puzzle tools">
+          <button class="side-action" data-action="undo"><span>↶</span><strong>Undo</strong><small data-undo-count>0</small></button>
+          <button class="side-action hint" data-action="hint"><span>✦</span><strong>Garden Hint</strong><small data-hint-count>3</small></button>
+          <button class="side-action" data-action="restart"><span>↻</span><strong>Restart</strong><small>Level</small></button>
+        </section>
+      </aside>
+
+      <aside class="game-side-panel game-side-right">
+        <section class="daily-widget ornate-panel"><div><span class="widget-icon">✦</span><div><strong>Daily Bloom</strong><small>Awaken 8 plants</small></div></div><div class="daily-meter"><i data-daily-progress></i><span data-daily-count>0 / 8</span><b>◆ 25</b></div></section>
+        <section class="restoration-widget ornate-panel"><header><span class="dome-mini"><img data-src="./assets/hd/dome-current.webp" alt="" decoding="async"></span><div><strong>Conservatory</strong><small>Restoration progress</small></div></header><div class="restoration-ring"><strong data-restoration-percent>0%</strong></div><div class="reward-preview"><span>Next reward</span><strong data-restoration-stage>Orchid Wing</strong><small><img data-src="./assets/hd/reward-chest.webp" alt="" decoding="async"></small></div></section>
+        <section class="collection-widget ornate-panel"><header><strong>Collection</strong><span data-collection-count>1 / 5</span></header><div class="collection-miniatures"><img data-src="./assets/hd/plant-lumen-orchid-on.webp" alt="" decoding="async"><img data-src="./assets/hd/plant-moonbell-on.webp" alt="" decoding="async"><img data-src="./assets/hd/plant-sun-dahlia-on.webp" alt="" decoding="async"></div><footer><span>Rooms restored</span><strong data-rooms-restored>0 / 8</strong></footer></section>
+      </aside>
+
+      <div class="hud-stats compact-hud-stats"><div data-stat="level"><span data-i18n="level">Level</span><strong data-hud-level>1</strong></div><div data-stat="score"><span data-i18n="score">Score</span><strong data-hud-score>0</strong></div><div class="moves-stat" data-stat="moves"><span data-i18n="moves">Moves</span><strong data-hud-moves>0</strong></div><div data-stat="blooms"><span data-i18n="blooms">Blooms</span><strong data-hud-blooms>0 / 0</strong></div><div data-stat="leaks"><span data-i18n="leaks">Leaks sealed</span><strong data-hud-leaks>0 / 0</strong></div></div>
     </header>
 
     <aside id="objective-banner" class="objective-banner" hidden><span>✤</span><strong data-objective-text></strong></aside>
@@ -1331,25 +1427,28 @@ function shellTemplate(version: string): string {
     <aside id="coach-overlay" class="coach-overlay ornate-panel" hidden><div class="coach-step" data-coach-step>1 / 3</div><h2 data-coach-title></h2><p data-coach-body></p><button class="button primary compact" data-action="dismiss-coach">Try it</button></aside>
 
     <nav id="game-toolbar" class="game-toolbar ornate-panel" hidden>
+      <div class="toolbar-flourish left" aria-hidden="true"></div>
       <button class="tool-button" data-action="undo"><span>↶</span><strong data-i18n="undo">Undo</strong><small>⌘Z</small></button>
       <button class="tool-button hint-button" data-action="hint"><span>✤</span><strong data-i18n="hint">Garden Hint</strong><small data-hint-count>3</small></button>
+      <div class="toolbar-core" aria-hidden="true"><i><img data-src="./assets/hd/botanical-crest.webp" alt="" decoding="async"></i><b></b></div>
       <button class="tool-button view-button" data-action="rotate-left" aria-label="Rotate view left"><span>◇</span><strong data-i18n="rotateView">Rotate view</strong></button>
       <button class="tool-button" data-action="restart"><span>↻</span><strong data-i18n="restart">Restart</strong></button>
       <button class="tool-button" data-action="menu"><span>☰</span><strong data-i18n="menu">Menu</strong></button>
+      <div class="toolbar-flourish right" aria-hidden="true"></div>
     </nav>
 
     <section id="complete-screen" class="screen complete-screen" hidden>
       <div class="completion-card ornate-panel">
-        <span class="completion-emblem">✤</span><p class="eyebrow">Bloom Circuit</p><h2 data-i18n="glasshouseRestored">Glasshouse Restored</h2><p class="completion-grade" data-final-grade></p><div class="stars" data-final-stars>★★★</div><div class="final-score"><span data-i18n="score">Score</span><strong data-final-score>0</strong></div>
+        <span class="completion-emblem"><img data-src="./assets/hd/botanical-crest.webp" alt="" decoding="async"></span><p class="eyebrow">Bloom Circuit</p><h2 data-i18n="glasshouseRestored">Glasshouse Restored</h2><p class="completion-grade" data-final-grade></p><div class="stars" data-final-stars>★★★</div><div class="final-score"><span data-i18n="score">Score</span><strong data-final-score>0</strong></div>
         <div class="completion-stats"><div><span data-i18n="moves">Moves</span><strong data-final-moves>0</strong></div><div><span>Time</span><strong data-final-time>00:00</strong></div><div><span data-i18n="bestScore">Best score</span><strong data-final-best>0</strong></div></div>
         <p class="completion-status" data-completion-status></p>
-        <section class="unlock-card" data-unlock hidden><img src="./assets/specimen-1.webp" alt=""><div><span data-i18n="newSpecimen">New specimen unlocked</span><strong data-unlock-name></strong><small>A rare bloom restored to the conservatory.</small></div></section>
+        <section class="unlock-card" data-unlock hidden><img data-src="./assets/hd/plant-lumen-orchid-on.webp" alt="" decoding="async"><div><span data-i18n="newSpecimen">New specimen unlocked</span><strong data-unlock-name></strong><small>A rare bloom restored to the conservatory.</small></div></section>
         <div class="completion-actions"><button class="button primary" data-completion-primary data-action="next" data-i18n="nextLevel">Next level</button><button class="button secondary" data-action="replay" data-i18n="replay">Replay</button><button class="text-button" data-action="return-menu" data-i18n="returnMenu">Return to menu</button></div>
       </div>
     </section>
 
     <section id="pause-overlay" class="pause-overlay" hidden><div class="pause-card ornate-panel"><span>Ⅱ</span><h2 data-i18n="pauseTitle">The glasshouse is paused</h2><button class="button primary" data-action="resume" data-i18n="resume">Resume</button><button class="button secondary" data-action="settings" data-i18n="settings">Settings</button><button class="text-button" data-action="return-menu" data-i18n="returnMenu">Return to menu</button></div></section>
-    <section id="loading-overlay" class="loading-overlay"><div class="loading-emblem">✤</div><h2>Clockwork Conservatory</h2><p data-i18n="loading">Opening the conservatory…</p></section>
+    <section id="loading-overlay" class="loading-overlay"><div class="loading-emblem"><img src="./assets/hd/botanical-crest.webp" alt=""></div><h2>Clockwork Conservatory</h2><p data-i18n="loading">Opening the conservatory…</p></section>
     <dialog id="game-modal" class="game-modal"><div id="modal-content"></div></dialog>
     <div id="toast" class="toast" role="status" hidden></div>
     <div id="live-region" class="sr-only" aria-live="polite"></div>`;
@@ -1361,8 +1460,7 @@ function must<T extends Element = HTMLElement>(scope: ParentNode, selector: stri
   return element;
 }
 function setText(scope: ParentNode, selector: string, text: string): void {
-  const element = scope.querySelector<HTMLElement>(selector);
-  if (element) element.textContent = text;
+  for (const element of scope.querySelectorAll<HTMLElement>(selector)) element.textContent = text;
 }
 function delay(milliseconds: number): Promise<void> { return new Promise((resolve) => window.setTimeout(resolve, milliseconds)); }
 function escapeHtml(value: string): string { return value.replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character] ?? character); }
@@ -1399,6 +1497,5 @@ function specimenName(kind: PlantKind): string {
   return ({ 'lumen-orchid': 'Lumen Orchid', moonbell: 'Moonbell', 'sun-dahlia': 'Sun Dahlia', 'mist-lily': 'Mist Lily', 'ember-bloom': 'Ember Bloom' })[kind];
 }
 function specimenImage(kind: PlantKind): string {
-  const index = ({ 'lumen-orchid': 1, moonbell: 2, 'sun-dahlia': 3, 'mist-lily': 4, 'ember-bloom': 5 })[kind];
-  return `./assets/specimen-${index}.webp`;
+  return `./assets/hd/plant-${kind}-on.webp`;
 }

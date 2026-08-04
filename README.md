@@ -4,10 +4,15 @@
 
 ![Premium gameplay](artifacts/screenshots/gameplay-level36.png)
 
-## Release candidate 1.1.0
+## Release candidate 1.2.0
 
-Version 1.1.0 keeps the premium botanical-clockwork presentation while making the game substantially faster, more responsive, more stable, and more alive across phones, tablets, desktop browsers, and embedded game frames.
+Version 1.2.0 upgrades the **actual playable game** to a much denser botanical-clockwork presentation: detailed cached 2.5D materials, topology-aware mechanisms, premium live HUD rails, original high-resolution UI ornaments, cleaner environmental art, richer menus and restoration map, while retaining the mobile performance and stability work from 1.1.0.
 
+- clean scene plates with no baked board or interface behind the live puzzle;
+- individually rendered brass-and-glass platforms, valves, distributors, Sunwell, cloches, plants, locks, leaks, and couplers;
+- full desktop cockpit with live objective, flow, restoration, collection, Daily Bloom, and working tool rails;
+- high-resolution botanical crest, chamber domes, reward chest, mode art, and specimen imagery across all menus;
+- gameplay assets loaded on demand and cached, preserving mobile responsiveness despite the richer presentation;
 - adaptive **Auto / High / Balanced** renderer profiles based on memory, CPU, network, pointer type, viewport, DPR, and sustained measured load;
 - hard Canvas pixel budgets, capped DPR, bounded effects, and a renderer that fully sleeps on static screens;
 - richer glass highlights, living aetherlight travelers, staged power propagation, bloom and leak-seal bursts, impact pulses, plant sway, atmospheric dust, and restoration-driven environmental lighting;
@@ -71,18 +76,19 @@ The GitHub Actions browser job runs the smoke matrix in Chromium, Firefox, and W
 
 Current measured production output:
 
-- initial HTML, CSS, JavaScript, and runtime assets: approximately **605 KiB**;
-- complete `dist/`, including source maps and build report: approximately **809 KiB**;
-- mobile first-screen runtime resources remain below **300 KiB**;
-- production package remains far below Arkadium’s public upload-scale expectations.
+- initial HTML, CSS, JavaScript, and runtime art: **2,223,497 bytes** (about **2.12 MiB**);
+- complete `dist/`, including source maps and build report: **2,494,312 bytes** (about **2.38 MiB**);
+- mobile menu resources: **755,704 encoded bytes** (about **738 KiB**), with hidden-screen art deferred;
+- cumulative first-game resources: **902,600 bytes** on Balanced and **1,085,996 bytes** on High;
+- the richer illustrated art remains far below the enforced **15 MB initial / 100 MB total** package budgets.
 
 Representative local Chromium measurements are recorded in `artifacts/performance-report.json`:
 
-- constrained phone profile: Balanced, DPR 1.5, 740,610 Canvas pixels, about 2.1 ms average draw cost, 37.8 ms input-to-render latency;
-- strong phone profile: High, DPR 2, 1,316,640 Canvas pixels, about 1.5 ms average draw cost, 3.7 ms input-to-render latency;
-- desktop profile: High, DPR 1, 1,296,000 Canvas pixels, about 1.6 ms average draw cost, 3.9 ms input-to-render latency;
+- constrained phone profile under 2× CPU throttle: Balanced, DPR 1.5, 740,610 Canvas pixels, about **5.0 ms** average draw cost and **14.2 ms** measured input-to-render latency in the latest run;
+- strong phone profile: High, DPR 2, 1,316,640 Canvas pixels, about **2.2 ms** average draw cost and **4.5 ms** input-to-render latency;
+- desktop profile: High, DPR 1, 1,296,000 Canvas pixels, about **2.5 ms** average draw cost and **28.8 ms** input-to-render latency;
 - static mobile menu: zero Canvas frames during the one-second sleep sample;
-- 72-cycle low-end mobile stress pass: no DOM growth, negligible measured heap change, no overflow, no browser error, and all renderer queues drained within bounds.
+- 72-cycle low-end mobile stress pass: DOM stayed at 416 nodes, no overflow or browser error occurred, and all renderer effect queues drained within bounds.
 
 These are automated local guardrails rather than a substitute for Arkadium Sandbox and physical-device QA.
 
@@ -119,4 +125,4 @@ The gameplay core has no DOM dependency. Platform APIs are isolated behind `Arka
 5. Complete physical-device, one-hour soak, throttled-network, and late-SDK testing before live publication.
 6. Submit the playable URL through Arkadium’s developer process.
 
-See the [Arkadium checklist](docs/ARKADIUM_CHECKLIST.md), [QA plan](docs/QA_PLAN.md), [performance notes](docs/PERFORMANCE.md), [game design](docs/GAME_DESIGN.md), and [1.1.0 release notes](docs/RELEASE_NOTES_1.1.0.md).
+See the [Arkadium checklist](docs/ARKADIUM_CHECKLIST.md), [QA plan](docs/QA_PLAN.md), [performance notes](docs/PERFORMANCE.md), [game design](docs/GAME_DESIGN.md), and [1.2.0 release notes](docs/RELEASE_NOTES_1.2.0.md).

@@ -1,6 +1,6 @@
 # Arkadium publishing checklist
 
-This document maps release candidate 1.1.0 to public Arkadium expectations and the integration work that must be finalized with an assigned producer.
+This document maps release candidate 1.2.0 to public Arkadium expectations and the integration work that must be finalized with an assigned producer.
 
 ## Public fit
 
@@ -32,12 +32,12 @@ This document maps release candidate 1.1.0 to public Arkadium expectations and t
 
 | Check | Evidence | Status |
 |---|---|---|
-| Initial package budget | Approximately 605 KiB; exact report in `dist/build-report.json` | Pass |
-| Complete package budget | Approximately 809 KiB including source maps/report | Pass |
-| Fast interaction | Local assets, non-blocking SDK, media-aware preload, no gameplay backend | Pass locally |
+| Initial package budget | 2,223,497 bytes (about 2.12 MiB); exact report in `dist/build-report.json` | Pass |
+| Complete package budget | 2,494,312 bytes (about 2.38 MiB) including source maps/report | Pass |
+| Fast interaction | Local assets, non-blocking SDK, deferred hidden-screen art, menu payload ~738 KiB encoded, no gameplay backend | Pass locally |
 | Adaptive rendering | Auto/High/Balanced, capped DPR and pixels, event-driven active/ambient/idle/sleep states | Pass locally |
-| Constrained-phone guardrail | Balanced, DPR 1.5, 740,610 pixels, ~2.1 ms average draw cost, 37.8 ms input-to-render under 2× CPU throttle | Pass locally |
-| Strong-phone guardrail | High, DPR 2, 1,316,640 pixels, ~1.5 ms average draw cost, 3.7 ms input-to-render | Pass locally |
+| Constrained-phone guardrail | Balanced, DPR 1.5, 740,610 pixels, ~5.0 ms average draw cost, 14.2 ms input-to-render under 2× CPU throttle in the latest run | Pass locally |
+| Strong-phone guardrail | High, DPR 2, 1,316,640 pixels, ~2.2 ms average draw cost, 4.5 ms input-to-render | Pass locally |
 | Static screen efficiency | Mobile menu rendered zero Canvas frames during one-second sleep sample | Pass locally |
 | Resize without state loss | Automated portrait/desktop resize preserves active puzzle and moves | Pass locally |
 | Queue/resource bounds | 72-cycle stress test drains particles, bursts, transitions, and impacts; no DOM growth | Pass locally |
