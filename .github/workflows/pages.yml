@@ -46,6 +46,7 @@ jobs:
         id: import
         if: ${{ hashFiles('STARLIGHT_IMPORT_TRIGGER.txt') != '' }}
         env:
+          GH_TOKEN: ${{ github.token }}
           BUNDLE_URL: 'https://sdmntprbrazilsouth.oaiusercontent.com/files/00000000-c714-820e-b620-1c966373f326/raw?se=2026-08-07T13%3A34%3A24Z&sp=r&sv=2026-02-06&sr=b&scid=81e31c2f-9caf-5389-9259-b407b425aaee&skoid=a6356955-0ca0-4033-9150-c0c162458498&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-08-07T10%3A27%3A21Z&ske=2026-08-08T10%3A27%3A21Z&sks=b&skv=2026-02-06&sig=xhSuIDcPBdoC6qYntXofo3uEFm1zvz7wzBzCbOKd3Xw%3D'
           BUNDLE_SHA256: e711ec69cdeef73a240ff4e22c2d136975282ee6c367fe12b7b8e26b4f0096cf
           SOURCE_COMMIT: b1c1b31984b0d3ad2095d12f9ee02e14c2fa7503
@@ -126,11 +127,6 @@ The Starlight Relay directory contains generated static release files built from
 
           gh issue comment 1 --repo "$GITHUB_REPOSITORY" \
             --body "Verified Starlight Relay static files committed to public \`main\` as \`${release_sha}\` from source \`${SOURCE_COMMIT}\`. Continuing with Pages deployment in run \`${GITHUB_RUN_ID}\`."
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BUNDLE_URL: 'https://sdmntprbrazilsouth.oaiusercontent.com/files/00000000-c714-820e-b620-1c966373f326/raw?se=2026-08-07T13%3A34%3A24Z&sp=r&sv=2026-02-06&sr=b&scid=81e31c2f-9caf-5389-9259-b407b425aaee&skoid=a6356955-0ca0-4033-9150-c0c162458498&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-08-07T10%3A27%3A21Z&ske=2026-08-08T10%3A27%3A21Z&sks=b&skv=2026-02-06&sig=xhSuIDcPBdoC6qYntXofo3uEFm1zvz7wzBzCbOKd3Xw%3D'
-          BUNDLE_SHA256: e711ec69cdeef73a240ff4e22c2d136975282ee6c367fe12b7b8e26b4f0096cf
-          SOURCE_COMMIT: b1c1b31984b0d3ad2095d12f9ee02e14c2fa7503
 
       - name: Install dependencies
         run: npm install
