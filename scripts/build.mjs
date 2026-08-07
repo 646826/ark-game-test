@@ -38,11 +38,11 @@ async function assembleStarlightRelease(directory) {
   const release = join(directory, 'starlight-relay');
   const parts = join(release, '.bundle-parts');
   const partNames = (await readdir(parts))
-    .filter((name) => /^index-\d{2}\.txt$/.test(name))
+    .filter((name) => /^index-\d{2}(?:-\d{2}){0,2}\.txt$/.test(name))
     .sort((a, b) => a.localeCompare(b));
 
-  if (partNames.length !== 8) {
-    throw new Error(`Starlight bundle must contain exactly 8 ordered parts; found ${partNames.length}.`);
+  if (partNames.length !== 18) {
+    throw new Error(`Starlight bundle must contain exactly 18 ordered parts; found ${partNames.length}.`);
   }
 
   const javascript = (
