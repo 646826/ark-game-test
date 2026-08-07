@@ -1,0 +1,9 @@
+{
+  "sourceRepository": "646826/arkadium-game-factory",
+  "sourceCommit": "9e1a39bc1a86267b7afe9e3b8cc90e7e3cf48643",
+  "sourceWorkflowRunId": "31186053332",
+  "sourceArtifactId": 8996763764,
+  "sourceArtifactSha256": "495490d2116cbc0819d79c08506a962f0d046efacd3aef7d02d883ccecf04d18",
+  "hostingMode": "generated game bundle with pinned Phaser CDN runtime",
+  "phaserRuntime": "https://cdn.jsdelivr.net/npm/phaser@4.2.1/dist/phaser.min.js"
+}
