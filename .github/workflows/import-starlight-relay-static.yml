@@ -1,9 +1,11 @@
 name: Import verified Starlight Relay static bundle
 
 on:
-  pull_request:
+  push:
     branches: [main]
-    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/import-starlight-relay-static.yml'
+      - 'STARLIGHT_IMPORT_TRIGGER.txt'
 
 permissions:
   contents: write
@@ -15,14 +17,12 @@ concurrency:
 
 jobs:
   import:
-    if: github.head_ref == 'deploy/import-starlight-relay-static'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       BUNDLE_URL: 'https://sdmntprbrazilsouth.oaiusercontent.com/files/00000000-e684-820e-aba6-a98c43af631a/raw?se=2026-08-07T13%3A27%3A29Z&sp=r&sv=2026-02-06&sr=b&scid=913d7045-76a4-5f64-802a-e56e21cb4660&skoid=a6356955-0ca0-4033-9150-c0c162458498&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-08-07T10%3A03%3A21Z&ske=2026-08-08T10%3A03%3A21Z&sks=b&skv=2026-02-06&sig=DgVh5xIPcaSwTqN2EJoZ7E5CzV%2BuVXQSmIbxV2l%2Bic4%3D'
       BUNDLE_SHA256: e711ec69cdeef73a240ff4e22c2d136975282ee6c367fe12b7b8e26b4f0096cf
       SOURCE_COMMIT: b1c1b31984b0d3ad2095d12f9ee02e14c2fa7503
-      EXPECTED_MAIN: f2e5d8d4e7ed71b396b481105717fcc2160d3518
     steps:
       - name: Publish import coordinates
         env:
@@ -31,12 +31,11 @@ jobs:
         run: |
           set -Eeuo pipefail
           gh issue comment 1 --repo "$GITHUB_REPOSITORY" \
-            --body "Starlight static import started. Source \`${SOURCE_COMMIT}\`; base \`${EXPECTED_MAIN}\`; run \`${GITHUB_RUN_ID}\`."
+            --body "Starlight static import started. Source \`${SOURCE_COMMIT}\`; base \`${GITHUB_SHA}\`; run \`${GITHUB_RUN_ID}\`."
 
-      - name: Check out helper branch
+      - name: Check out exact trigger commit
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: deploy/import-starlight-relay-static
           fetch-depth: 0
           persist-credentials: true
 
@@ -62,16 +61,16 @@ jobs:
           grep -F 'data-role="app"' "$bundle_dir/index.html"
           node -e "const fs=require('node:fs'); const p=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+'/starlight-relay-static/build-info.json','utf8')); if(p.sourceCommit!==process.env.SOURCE_COMMIT) process.exit(1)"
 
-      - name: Switch to exact public main and install dependencies
+      - name: Pin exact public main and install dependencies
         shell: bash
         run: |
           set -Eeuo pipefail
           git fetch origin main
-          test "$(git rev-parse origin/main)" = "$EXPECTED_MAIN"
+          test "$(git rev-parse origin/main)" = "$GITHUB_SHA"
           git switch --detach origin/main
           npm install
 
-      - name: Materialize Starlight under public subpath
+      - name: Materialize Starlight and remove one-shot helpers
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -79,6 +78,7 @@ jobs:
           rm -rf "$target"
           mkdir -p "$target"
           cp -a "$RUNNER_TEMP/starlight-relay-static"/. "$target"/
+          rm -f .github/workflows/import-starlight-relay-static.yml STARLIGHT_IMPORT_TRIGGER.txt
           python3 - <<'PY'
           from pathlib import Path
           path = Path('README.md')
@@ -121,7 +121,9 @@ The Starlight Relay directory contains generated static release files built from
           expected="$RUNNER_TEMP/expected.txt"
           actual="$RUNNER_TEMP/actual.txt"
           {
+            echo .github/workflows/import-starlight-relay-static.yml
             echo README.md
+            echo STARLIGHT_IMPORT_TRIGGER.txt
             find public/starlight-relay -type f -printf '%p\n'
           } | sort -u > "$expected"
           {
@@ -132,14 +134,15 @@ The Starlight Relay directory contains generated static release files built from
           git diff --check
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add README.md public/starlight-relay
+          git add -A
           git commit -m 'feat(pages): publish verified Starlight Relay subpath' \
             -m "Source: 646826/arkadium-game-factory@$SOURCE_COMMIT" \
             -m "Bundle SHA-256: $BUNDLE_SHA256" \
+            -m 'Removes the one-shot importer and trigger from the final tree.' \
             -m 'Refs #1'
           release_sha="$(git rev-parse HEAD)"
           git fetch origin main
-          test "$(git rev-parse origin/main)" = "$EXPECTED_MAIN"
+          test "$(git rev-parse origin/main)" = "$GITHUB_SHA"
           git push origin HEAD:main
           echo "sha=$release_sha" >> "$GITHUB_OUTPUT"
 
