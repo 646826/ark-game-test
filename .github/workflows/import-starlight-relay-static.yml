@@ -1,8 +1,9 @@
 name: Import verified Starlight Relay static bundle
 
 on:
-  push:
-    branches: [deploy/import-starlight-relay-static]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: write
@@ -14,17 +15,28 @@ concurrency:
 
 jobs:
   import:
+    if: github.head_ref == 'deploy/import-starlight-relay-static'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      BUNDLE_URL: 'https://sdmntprbrazilsouth.oaiusercontent.com/files/00000000-065c-820e-a9e4-d10c0df3eb87/raw?se=2026-08-07T13%3A22%3A16Z&sp=r&sv=2026-02-06&sr=b&scid=d4b2b166-d34c-5301-86fb-d9ec702a8178&skoid=a6356955-0ca0-4033-9150-c0c162458498&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-08-07T09%3A40%3A21Z&ske=2026-08-08T09%3A40%3A21Z&sks=b&skv=2026-02-06&sig=QBWnSi/ahKI33RPx3gjzQ1rDD39zdu8/WYKRoEnMcRc%3D'
+      BUNDLE_URL: 'https://sdmntprbrazilsouth.oaiusercontent.com/files/00000000-e684-820e-aba6-a98c43af631a/raw?se=2026-08-07T13%3A27%3A29Z&sp=r&sv=2026-02-06&sr=b&scid=913d7045-76a4-5f64-802a-e56e21cb4660&skoid=a6356955-0ca0-4033-9150-c0c162458498&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-08-07T10%3A03%3A21Z&ske=2026-08-08T10%3A03%3A21Z&sks=b&skv=2026-02-06&sig=DgVh5xIPcaSwTqN2EJoZ7E5CzV%2BuVXQSmIbxV2l%2Bic4%3D'
       BUNDLE_SHA256: e711ec69cdeef73a240ff4e22c2d136975282ee6c367fe12b7b8e26b4f0096cf
       SOURCE_COMMIT: b1c1b31984b0d3ad2095d12f9ee02e14c2fa7503
       EXPECTED_MAIN: f2e5d8d4e7ed71b396b481105717fcc2160d3518
     steps:
+      - name: Publish import coordinates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          gh issue comment 1 --repo "$GITHUB_REPOSITORY" \
+            --body "Starlight static import started. Source \`${SOURCE_COMMIT}\`; base \`${EXPECTED_MAIN}\`; run \`${GITHUB_RUN_ID}\`."
+
       - name: Check out helper branch
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          ref: deploy/import-starlight-relay-static
           fetch-depth: 0
           persist-credentials: true
 
