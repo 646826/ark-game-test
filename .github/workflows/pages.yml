@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
   pages: write
   id-token: write
 
@@ -21,15 +22,110 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Publish deployment coordinates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          gh issue comment 1 --repo "$GITHUB_REPOSITORY" \
+            --body "Pages deployment started. Commit \`${GITHUB_SHA}\`; run \`${GITHUB_RUN_ID}\`."
+
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
-      - run: npm install
-      - run: npm run ci
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run repository CI
+        run: npm run ci
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9
         with:
           path: dist
-      - id: deployment
-        uses: actions/deploy-pages@v4
+
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128
+
+      - name: Verify Clockwork Conservatory root
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PAGE_URL"
+          for attempt in 1 2 3 4 5 6; do
+            if curl --fail --silent --show-error --location \
+              --connect-timeout 10 --max-time 30 \
+              "$PAGE_URL" -o "$RUNNER_TEMP/root.html"; then
+              break
+            fi
+            if [[ "$attempt" -eq 6 ]]; then exit 1; fi
+            sleep 5
+          done
+          grep -F '<title>Clockwork Conservatory · Bloom Circuit</title>' "$RUNNER_TEMP/root.html"
+
+      - name: Verify Starlight Relay subpath and assets
+        if: ${{ hashFiles('public/starlight-relay/index.html') != '' }}
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          starlight_url="${PAGE_URL%/}/starlight-relay/"
+          for attempt in 1 2 3 4 5 6; do
+            if curl --fail --silent --show-error --location \
+              --connect-timeout 10 --max-time 30 \
+              "$starlight_url" -o "$RUNNER_TEMP/starlight.html"; then
+              break
+            fi
+            if [[ "$attempt" -eq 6 ]]; then exit 1; fi
+            sleep 5
+          done
+          grep -F '<title>Starlight Relay</title>' "$RUNNER_TEMP/starlight.html"
+          grep -F 'data-role="app"' "$RUNNER_TEMP/starlight.html"
+          grep -oE '(src|href)="\./[^"]+"' "$RUNNER_TEMP/starlight.html" \
+            | sed -E 's/^[^=]+="\.\///; s/"$//' \
+            | sort -u \
+            | while IFS= read -r asset; do
+                curl --fail --silent --show-error --location \
+                  --connect-timeout 10 --max-time 30 \
+                  "${starlight_url}${asset}" -o /dev/null
+              done
+          curl --fail --silent --show-error --location \
+            "${starlight_url}build-info.json" -o "$RUNNER_TEMP/build-info.json"
+          grep -F '"sourceCommit"' "$RUNNER_TEMP/build-info.json"
+          printf 'starlight_url=%s\n' "$starlight_url"
+
+      - name: Publish verified Starlight URL
+        if: ${{ success() && hashFiles('public/starlight-relay/index.html') != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          starlight_url="${PAGE_URL%/}/starlight-relay/"
+          source_commit="$(node -e "const fs=require('node:fs'); const p=JSON.parse(fs.readFileSync('public/starlight-relay/build-info.json','utf8')); process.stdout.write(p.sourceCommit)")"
+          gh issue comment 1 --repo "$GITHUB_REPOSITORY" \
+            --body "Starlight Relay deployment verified. Source commit \`${source_commit}\`; host commit \`${GITHUB_SHA}\`; run \`${GITHUB_RUN_ID}\`; URL: ${starlight_url}"
+
+      - name: Publish deployment failure evidence
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh issue comment 1 --repo "$GITHUB_REPOSITORY" \
+            --body "Pages deployment failed. Commit \`${GITHUB_SHA}\`; run \`${GITHUB_RUN_ID}\`. No playable Starlight URL was claimed."
