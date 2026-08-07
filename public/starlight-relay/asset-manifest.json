@@ -1,0 +1,36 @@
+{
+  "version": 3,
+  "game": "starlight-relay",
+  "sourceRepository": "646826/arkadium-game-factory",
+  "sourceCommit": "9e1a39bc1a86267b7afe9e3b8cc90e7e3cf48643",
+  "sourceWorkflowRunId": "31186053332",
+  "sourceArtifactId": 8996763764,
+  "sourceArtifactSha256": "495490d2116cbc0819d79c08506a962f0d046efacd3aef7d02d883ccecf04d18",
+  "localFiles": [
+    {
+      "path": "index.html",
+      "sha256": "cce9eb3d36446ec2f8ab7f32b9c5d3b6dd15fa98dc13907b630a2ea032f24248"
+    },
+    {
+      "path": "assets/index-BIXdqmAE.js",
+      "sha256": "603e16eebb7c4ddcd0ea4fe79bd5b38f8e2caa4804f7458ec302901514f17637"
+    },
+    {
+      "path": "assets/index-Dca4xZzP.css",
+      "sha256": "c7737cfd5e0b7c5637d75f033338950245859826ce140cdb2c9abcc9d4bec928"
+    },
+    {
+      "path": "build-info.json",
+      "sha256": "078cd19bd0d2ecb5564399188183090479e2be20a32b640215b4265ea9e8dcfd"
+    },
+    {
+      "path": ".nojekyll",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "externalRuntime": {
+    "package": "phaser",
+    "version": "4.2.1",
+    "url": "https://cdn.jsdelivr.net/npm/phaser@4.2.1/dist/phaser.min.js"
+  }
+}

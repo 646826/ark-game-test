@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   issues: write
   pages: write
   id-token: write
@@ -21,6 +21,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Publish deployment coordinates
         env:
@@ -33,106 +34,37 @@ jobs:
 
       - name: Check out repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          fetch-depth: 0
-          persist-credentials: true
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
 
-      - name: Import verified Starlight Relay release
-        id: import
-        if: ${{ hashFiles('STARLIGHT_IMPORT_TRIGGER.txt') != '' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BUNDLE_URL: 'https://sdmntprbrazilsouth.oaiusercontent.com/files/00000000-c714-820e-b620-1c966373f326/raw?se=2026-08-07T13%3A34%3A24Z&sp=r&sv=2026-02-06&sr=b&scid=81e31c2f-9caf-5389-9259-b407b425aaee&skoid=a6356955-0ca0-4033-9150-c0c162458498&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-08-07T10%3A27%3A21Z&ske=2026-08-08T10%3A27%3A21Z&sks=b&skv=2026-02-06&sig=xhSuIDcPBdoC6qYntXofo3uEFm1zvz7wzBzCbOKd3Xw%3D'
-          BUNDLE_SHA256: e711ec69cdeef73a240ff4e22c2d136975282ee6c367fe12b7b8e26b4f0096cf
-          SOURCE_COMMIT: b1c1b31984b0d3ad2095d12f9ee02e14c2fa7503
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          bundle_zip="$RUNNER_TEMP/starlight-relay-static.zip"
-          bundle_dir="$RUNNER_TEMP/starlight-relay-static"
-          curl --fail --silent --show-error --location \
-            --retry 3 --retry-all-errors \
-            --connect-timeout 10 --max-time 120 \
-            "$BUNDLE_URL" -o "$bundle_zip"
-          echo "$BUNDLE_SHA256  $bundle_zip" | sha256sum -c -
-          mkdir -p "$bundle_dir"
-          unzip -q "$bundle_zip" -d "$bundle_dir"
-          test -f "$bundle_dir/index.html"
-          test -f "$bundle_dir/build-info.json"
-          test -n "$(find "$bundle_dir/assets" -maxdepth 1 -type f -name '*.js' -print -quit)"
-          test -z "$(find "$bundle_dir" -type l -print -quit)"
-          test -z "$(find "$bundle_dir" -type f -name '*.map' -print -quit)"
-          grep -F '<title>Starlight Relay</title>' "$bundle_dir/index.html"
-          grep -F 'data-role="app"' "$bundle_dir/index.html"
-          node -e "const fs=require('node:fs'); const p=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+'/starlight-relay-static/build-info.json','utf8')); if(p.sourceCommit!==process.env.SOURCE_COMMIT) process.exit(1)"
-
-          target='public/starlight-relay'
-          rm -rf "$target"
-          mkdir -p "$target"
-          cp -a "$bundle_dir"/. "$target"/
-          rm -f .github/workflows/import-starlight-relay-static.yml STARLIGHT_IMPORT_TRIGGER.txt
-
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('README.md')
-          text = path.read_text(encoding='utf-8').rstrip()
-          marker = '## Hosted games'
-          section = '''## Hosted games
-
-- **Clockwork Conservatory:** https://646826.github.io/ark-game-test/
-- **Starlight Relay:** https://646826.github.io/ark-game-test/starlight-relay/
-
-The Starlight Relay directory contains generated static release files built from private source commit `b1c1b31984b0d3ad2095d12f9ee02e14c2fa7503`. Its `build-info.json` preserves that source binding; no private repository credentials or source maps are published.
-'''
-          if marker in text:
-              prefix = text.split(marker, 1)[0].rstrip()
-              path.write_text(prefix + '\n\n' + section, encoding='utf-8')
-          else:
-              path.write_text(text + '\n\n' + section, encoding='utf-8')
-          PY
-
-          expected="$RUNNER_TEMP/expected.txt"
-          actual="$RUNNER_TEMP/actual.txt"
-          {
-            echo .github/workflows/import-starlight-relay-static.yml
-            echo README.md
-            echo STARLIGHT_IMPORT_TRIGGER.txt
-            find public/starlight-relay -type f -printf '%p\n'
-          } | sort -u > "$expected"
-          {
-            git diff --name-only
-            git ls-files --others --exclude-standard
-          } | sort -u > "$actual"
-          diff -u "$expected" "$actual"
-          git diff --check
-
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git commit -m 'feat(pages): publish verified Starlight Relay subpath' \
-            -m "Source: 646826/arkadium-game-factory@$SOURCE_COMMIT" \
-            -m "Bundle SHA-256: $BUNDLE_SHA256" \
-            -m 'Removes one-shot importer files from the final tree.' \
-            -m 'Refs #1'
-          release_sha="$(git rev-parse HEAD)"
-          git fetch origin main
-          test "$(git rev-parse origin/main)" = "$GITHUB_SHA"
-          git push origin HEAD:main
-          echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
-
-          gh issue comment 1 --repo "$GITHUB_REPOSITORY" \
-            --body "Verified Starlight Relay static files committed to public \`main\` as \`${release_sha}\` from source \`${SOURCE_COMMIT}\`. Continuing with Pages deployment in run \`${GITHUB_RUN_ID}\`."
-
       - name: Install dependencies
         run: npm install
 
       - name: Run repository CI
         run: npm run ci
+
+      - name: Validate Starlight release output
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          release='dist/starlight-relay'
+          test -f "$release/index.html"
+          test -f "$release/build-info.json"
+          test -f "$release/asset-manifest.json"
+          test -f "$release/assets/index-BIXdqmAE.js"
+          test -f "$release/assets/index-Dca4xZzP.css"
+          test ! -d "$release/.bundle-parts"
+          test -z "$(find "$release" -type f -name '*.map' -print -quit)"
+          grep -F '<title>Starlight Relay</title>' "$release/index.html"
+          grep -F 'data-role="app"' "$release/index.html"
+          grep -F 'data-role="energy"' "$release/index.html"
+          grep -F 'https://cdn.jsdelivr.net/npm/phaser@4.2.1/dist/phaser.min.js' "$release/index.html"
+          echo '603e16eebb7c4ddcd0ea4fe79bd5b38f8e2caa4804f7458ec302901514f17637  dist/starlight-relay/assets/index-BIXdqmAE.js' | sha256sum -c -
+          echo 'c7737cfd5e0b7c5637d75f033338950245859826ce140cdb2c9abcc9d4bec928  dist/starlight-relay/assets/index-Dca4xZzP.css' | sha256sum -c -
+          node -e "const fs=require('node:fs'); const p=JSON.parse(fs.readFileSync('$release/build-info.json','utf8')); if(p.sourceCommit!=='9e1a39bc1a86267b7afe9e3b8cc90e7e3cf48643') process.exit(1)"
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d
@@ -164,8 +96,7 @@ The Starlight Relay directory contains generated static release files built from
           done
           grep -F '<title>Clockwork Conservatory · Bloom Circuit</title>' "$RUNNER_TEMP/root.html"
 
-      - name: Verify Starlight Relay subpath and assets
-        if: ${{ hashFiles('public/starlight-relay/index.html') != '' }}
+      - name: Verify Starlight Relay entrypoint, assets, and browser boot
         env:
           PAGE_URL: ${{ steps.deployment.outputs.page_url }}
         shell: bash
@@ -183,6 +114,8 @@ The Starlight Relay directory contains generated static release files built from
           done
           grep -F '<title>Starlight Relay</title>' "$RUNNER_TEMP/starlight.html"
           grep -F 'data-role="app"' "$RUNNER_TEMP/starlight.html"
+          grep -F 'data-role="energy"' "$RUNNER_TEMP/starlight.html"
+
           grep -oE '(src|href)="\./[^"]+"' "$RUNNER_TEMP/starlight.html" \
             | sed -E 's/^[^=]+="\.\///; s/"$//' \
             | sort -u \
@@ -191,25 +124,33 @@ The Starlight Relay directory contains generated static release files built from
                   --connect-timeout 10 --max-time 30 \
                   "${starlight_url}${asset}" -o /dev/null
               done
+
           curl --fail --silent --show-error --location \
             "${starlight_url}build-info.json" -o "$RUNNER_TEMP/build-info.json"
-          grep -F '"sourceCommit"' "$RUNNER_TEMP/build-info.json"
+          grep -F '"sourceCommit": "9e1a39bc1a86267b7afe9e3b8cc90e7e3cf48643"' "$RUNNER_TEMP/build-info.json"
+          curl --fail --silent --show-error --location \
+            --connect-timeout 10 --max-time 60 \
+            'https://cdn.jsdelivr.net/npm/phaser@4.2.1/dist/phaser.min.js' -o /dev/null
+
+          browser="$(command -v google-chrome || command -v chromium || true)"
+          test -n "$browser"
+          "$browser" --headless=new --no-sandbox --disable-gpu \
+            --virtual-time-budget=10000 --dump-dom "$starlight_url" \
+            > "$RUNNER_TEMP/starlight-rendered.html"
+          grep -F 'data-game-ready="true"' "$RUNNER_TEMP/starlight-rendered.html"
+          grep -F '<canvas' "$RUNNER_TEMP/starlight-rendered.html"
           printf 'starlight_url=%s\n' "$starlight_url"
 
       - name: Publish verified Starlight URL
-        if: ${{ success() && hashFiles('public/starlight-relay/index.html') != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
           PAGE_URL: ${{ steps.deployment.outputs.page_url }}
-          RELEASE_SHA: ${{ steps.import.outputs.release_sha }}
         shell: bash
         run: |
           set -Eeuo pipefail
           starlight_url="${PAGE_URL%/}/starlight-relay/"
-          source_commit="$(node -e "const fs=require('node:fs'); const p=JSON.parse(fs.readFileSync('public/starlight-relay/build-info.json','utf8')); process.stdout.write(p.sourceCommit)")"
-          host_commit="${RELEASE_SHA:-$GITHUB_SHA}"
           gh issue comment 1 --repo "$GITHUB_REPOSITORY" \
-            --body "Starlight Relay deployment verified. Source commit \`${source_commit}\`; host commit \`${host_commit}\`; run \`${GITHUB_RUN_ID}\`; URL: ${starlight_url}"
+            --body "Starlight Relay deployment verified. Source commit \`9e1a39bc1a86267b7afe9e3b8cc90e7e3cf48643\`; host commit \`${GITHUB_SHA}\`; run \`${GITHUB_RUN_ID}\`; URL: ${starlight_url}"
 
       - name: Publish deployment failure evidence
         if: failure()
