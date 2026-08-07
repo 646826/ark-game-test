@@ -1,0 +1,1 @@
+Trigger the checksum-bound Starlight Relay static importer from main.
