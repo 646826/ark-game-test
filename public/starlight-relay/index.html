@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#061126" />
+    <meta name="description" content="Starlight Relay - practical Arkadium Game Factory example." />
+    <title>Starlight Relay</title>
+    <script src="https://cdn.jsdelivr.net/npm/phaser@4.2.1/dist/phaser.min.js" crossorigin="anonymous"></script>
+    <script type="module" crossorigin src="./assets/index-BIXdqmAE.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-Dca4xZzP.css">
+  </head>
+  <body>
+    <main id="app" class="game-shell" data-role="app" data-phase="new">
+      <div id="game-root" aria-hidden="true"></div>
+
+      <header class="hud-top" aria-label="Game status">
+        <section class="brand-card">
+          <p class="eyebrow">Arkadium Game Factory example</p>
+          <h1>Starlight Relay</h1>
+          <p data-role="status">Preparing orbital relay...</p>
+        </section>
+        <section class="metrics" aria-label="Run metrics">
+          <div class="metric"><span>Score</span><strong data-role="score">0</strong></div>
+          <div class="metric"><span>Combo</span><strong data-role="combo">x1</strong></div>
+          <div class="metric"><span>Shields</span><strong data-role="shields">◆◆◆</strong></div>
+          <div class="metric"><span>Energy</span><strong data-role="energy">0</strong></div>
+          <div class="metric"><span>Wave</span><strong data-role="wave">0/24</strong></div>
+        </section>
+      </header>
+
+      <aside class="legend" aria-label="Object legend">
+        <span><i class="legend-star"></i> Starlight</span>
+        <span><i class="legend-prism"></i> Prism</span>
+        <span><i class="legend-shard"></i> Shard</span>
+      </aside>
+
+      <section class="control-dock" aria-label="Game controls">
+        <div class="lane-tray" data-role="lane-tray" aria-label="Relay lanes"></div>
+        <button class="pulse-button" type="button" data-action="pulse">
+          <span class="pulse-icon">✦</span>
+          <span>Pulse</span>
+          <strong data-role="pulse-count">0</strong>
+        </button>
+        <button class="sound-button" type="button" data-action="sound" aria-pressed="false">
+          Sound on
+        </button>
+      </section>
+
+      <section class="title-overlay overlay" data-role="title-overlay" aria-labelledby="game-title">
+        <div class="overlay-card title-card">
+          <p class="eyebrow">First practical reference game</p>
+          <h2 id="game-title">Carry the light through 24 orbital waves.</h2>
+          <p>
+            Move between five lanes, catch starlight, avoid void shards, and spend prism energy to
+            purify danger.
+          </p>
+          <div class="control-hints" aria-label="Controls">
+            <span>← → or A D</span><span>1-5 select lane</span><span>Space uses pulse</span>
+          </div>
+          <button class="primary-button" type="button" data-action="start">Start relay</button>
+        </div>
+      </section>
+
+      <section
+        class="result-overlay overlay"
+        data-role="result-overlay"
+        hidden
+        aria-labelledby="result-title"
+      >
+        <div class="overlay-card result-card">
+          <p class="eyebrow">Run complete</p>
+          <h2 id="result-title" data-role="result-title">Relay synchronized</h2>
+          <div class="result-grid">
+            <div><span>Final score</span><strong data-role="result-score">0</strong></div>
+            <div><span>Best score</span><strong data-role="result-best">0</strong></div>
+          </div>
+          <button class="primary-button" type="button" data-action="restart">Play again</button>
+        </div>
+      </section>
+
+      <div class="pause-card" data-role="pause" hidden>Relay paused by host</div>
+      <div class="error-banner" data-role="error" hidden role="alert"></div>
+      <div class="sr-only" data-role="live" aria-live="polite" aria-atomic="true"></div>
+    </main>
+  </body>
+</html>
